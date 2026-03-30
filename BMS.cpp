@@ -105,7 +105,6 @@ void BMS_Init()
 
 BMS_STATES BMS_Check_Fault()
 {
-    
     // Placeholder for fault checking logic
     if(bms_t.over_voltage || bms_t.under_voltage || bms_t.over_temperature){
         return BMS_SENSOR_FAULT;
@@ -230,8 +229,4 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
 void BMS_Update_Data(){
     BMS_Update_Volt();
     BMS_Update_State();
-}
-
-void print_BMS_Info(){
-
 }

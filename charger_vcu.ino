@@ -459,13 +459,28 @@ void updateChargingLed() {
     uint32_t now_Ms = millis();
 
     switch (bms_t.charging_states) {
-        case CHARGING_OFF:
+        case CHG_TEST: // Fast flash
+            if (nowMs - lastLedUpdateMs > kTestLedIntervalMs) {
+                digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
+                lastLedUpdateMs = nowMs;
+            }
+            break;
+
+        case CHG_READY: // Slow flash
+            if (nowMs - lastLedUpdateMs > kReadyLedIntervalMs) {
+                digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
+                lastLedUpdateMs = nowMs;
+            }
+            break;
+
+        case CHG_START: // Solid ON
+            digitalWrite(kChargingLedPin, HIGH);
+            break;
+
+        case CHG_INITIAL: // Off
+        case CHG_FAIL:    // Off (Fault LED handles fail indication)
+        default:          // Off
             digitalWrite(kChargingLedPin, LOW);
-            break;
-        case CHARGING_ON:
-            digitalWrite(kChargingLedPin, now_Ms % 1000 > 500);
-            break;
-        default:
             break;
     }
 }
