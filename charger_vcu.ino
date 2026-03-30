@@ -115,16 +115,17 @@ CANMessageConfig_t messageConfigs[] = {
 // Calculate the number of messages in the configuration array
 const size_t kNumMessages = sizeof(messageConfigs) / sizeof(CANMessageConfig_t);
 
+extern BMS_t bms_t;
+bool bms_normal;
+
 // ----------------- Function Prototypes -----------------
 bool Init_CAN();
 void CAN_Sender_Task(void *pvParameters);
 void CAN_Receiver_Task(void *pvParameters);
-void systemHealthCheckTask(void *pvParameters); // Changed loop content to a task
-void BMSMonitorTask(void *pvParameters);      // Changed loop content to a task
+void System_Health_Check_Task(void *pvParameters); // Changed loop content to a task
+void BMS_Monitor_Task(void *pvParameters);      // Changed loop content to a task
 void checkBMSStatus();
 void Process_BMS_Message(const twai_message_t *message);
-bool isSDCClosed();
-bool isBatteryHealthy();
 void updateChargingState();
 void updateChargingLed();
 void printSystemStatus(); // Combined print functions
@@ -382,6 +383,93 @@ void processOBCMessage(const twai_message_t *message) {
             break;
     }
 }
+
+void System_Health_Check_Task(void *pvParameters) {
+     TickType_t lastWakeTime = xTaskGetTickCount();
+     const TickType_t taskFrequency = pdMS_TO_TICKS(kHealthCheckIntervalMs);
+
+    while(true) {
+         // Wait for the next cycle
+        vTaskDelayUntil(&lastWakeTime, taskFrequency);
+
+        // Check CAN controller status
+        twai_status_info_t status_info;
+        esp_err_t result = twai_get_status_info(&status_info);
+
+        if (result == ESP_OK) {
+            // Optional: Log detailed status less frequently if needed
+            // Serial.printf("DEBUG: CAN Status: State=%d, TXerr=%d, RXerr=%d, TXq=%d, RXq=%d, Rcvd=%d, Sent=%d\n",
+            //       status_info.state, status_info.tx_error_counter, status_info.rx_error_counter,
+            //       status_info.msgs_to_tx, status_info.msgs_to_rx,
+            //       status_info.rx_msg_count, status_info.tx_msg_count);
+
+            if (status_info.state == TWAI_STATE_BUS_OFF) {
+                Serial.println("ERROR: CAN bus-off detected! Attempting recovery...");
+                result = twai_initiate_recovery(); // Attempt recovery
+                Serial.printf("INFO: CAN recovery attempt result: %s\n", esp_err_to_name(result));
+                // Consider more robust recovery (e.g., re-init after repeated failures)
+            } else if (status_info.state == TWAI_STATE_RECOVERING) {
+                Serial.println("INFO: CAN bus is recovering...");
+            } else if (status_info.tx_error_counter > 127 || status_info.rx_error_counter > 127) {
+                 Serial.printf("WARN: High CAN error count (TX:%d, RX:%d). State: %d\n",
+                       status_info.tx_error_counter, status_info.rx_error_counter, status_info.state);
+                 // Potentially trigger a warning state or investigation
+            }
+        } else {
+             Serial.printf("ERROR: Failed to get TWAI status: %s\n", esp_err_to_name(result));
+        }
+
+        // Add other health checks here (e.g., stack high water mark, temperature sensor)
+        // UBaseType_t stackHighWater = uxTaskGetStackHighWaterMark(NULL); // Check own stack
+        // Serial.printf("DEBUG: SysHealth Task Stack HWM: %u words\n", stackHighWater);
+    }
+}
+
+void BMS_Monitor_Task(void *pvParameters) {
+    TickType_t lastWakeTime = xTaskGetTickCount();
+    const TickType_t taskFrequency = pdMS_TO_TICKS(kBMSMonitorIntervalMs);
+    
+    while (true) {
+        bms_normal = bms_t.bms_states == BMS_NORMAL;
+
+        // LED lighting is bms normal
+        digitalWrite(kBMSFaultPin, bms_normal ? HIGH : LOW);
+
+        vTaskDelayUntil(&lastWakeTime, taskFrequency);
+
+        checkBMSStatus();
+
+        updateChargingLed();
+
+        static uint32_t last_print_time_Ms = 0;
+        uint32_t now_Ms = millis();
+        if(now_Ms - last_print_time_Ms > 1000) {
+            printSystemStatus();
+            last_print_time_Ms = now_Ms;
+        }
+    }
+}
+
+void checkBMSStatus() {
+    BMS_Update_Data();
+    updateChargingState();
+}
+
+void updateChargingLed() {
+    uint32_t now_Ms = millis();
+
+    switch (bms_t.charging_states) {
+        case CHARGING_OFF:
+            digitalWrite(kChargingLedPin, LOW);
+            break;
+        case CHARGING_ON:
+            digitalWrite(kChargingLedPin, now_Ms % 1000 > 500);
+            break;
+        default:
+            break;
+    }
+}
+
 
 
 
