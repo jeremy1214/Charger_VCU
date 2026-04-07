@@ -67,13 +67,13 @@ typedef enum
     BMS_SENSOR_FAULT
 } BMS_STATES;
 
-typedef enum {
-    CHG_INITIAL,  // System is initializing
-    CHG_TEST,     // Running self-tests
-    CHG_READY,    // System ready but not charging
-    CHG_START,    // Charging in progress
-    CHG_FAIL      // Charging failed
-} CHARGING_STATES;
+typedef enum{
+    CHARGING_INIT,
+    CHARGING_TEST,
+    CHARGING_READY,
+    CHARGING_START,
+    CHARGING_FAIL
+}CHARGING_STATES;
 
 typedef struct{
     BMS_STATES bms_states;

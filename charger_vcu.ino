@@ -533,26 +533,26 @@ void updateChargingLed() {
     uint32_t now_Ms = millis();
 
     switch (bms_t.charging_states) {
-        case CHG_TEST: // Fast flash
+        case CHARGING_TEST: // Fast flash
             if (now_Ms - lastLedUpdateMs > kTestLedIntervalMs) {
                 digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
-                lastLedUpdateMs = nowMs;
+                lastLedUpdateMs = now_Ms;
             }
             break;
 
-        case CHG_READY: // Slow flash
+        case CHARGING_READY: // Slow flash
             if (now_Ms - lastLedUpdateMs > kReadyLedIntervalMs) {
                 digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
-                lastLedUpdateMs = nowMs;
+                lastLedUpdateMs = now_Ms;
             }
             break;
 
-        case CHG_START: // Solid ON
+        case CHARGING_START: // Solid ON
             digitalWrite(kChargingLedPin, HIGH);
             break;
 
-        case CHG_INITIAL: // Off
-        case CHG_FAIL:    // Off (Fault LED handles fail indication)
+        case CHARGING_INIT: // Off
+        case CHARGING_FAIL:    // Off (Fault LED handles fail indication)
         default:          // Off
             digitalWrite(kChargingLedPin, LOW);
             break;
@@ -593,7 +593,7 @@ void Update_Charging_State() {
 
     // Prevent rapid state changes, but allow immediate transition *to* FAIL
     CHARGING_STATES currentState = bms_t.charging_states; // Read current state once
-    if (currentState != CHG_FAIL && (nowMs - lastStateChangeMs < kStateChangeMinIntervalMs)) {
+    if (currentState != CHARGING_FAIL && (nowMs - lastStateChangeMs < kStateChangeMinIntervalMs)) {
        // If not failing and minimum interval hasn't passed, return
        // (This prevents flickering between non-fail states)
        return;
@@ -602,20 +602,20 @@ void Update_Charging_State() {
     CHARGING_STATES previousState = currentState; // Store state before switch
 
     switch (currentState) {
-        case CHG_INITIAL:
+        case CHARGING_INIT:
             // Transition to TEST once BMS is initialized and normal
             if (bms_t.bms_states == BMS_NORMAL) {
-                bms_t.charging_states = CHG_TEST;
+                bms_t.charging_states = CHARGING_TEST;
                 testStateEntryTimeMs = nowMs; // *** Record entry time ***
                 Serial.println("STATE: -> TEST");
             }
             // Stay initial if BMS not ready yet
             break;
 
-        case CHG_TEST:
+        case CHARGING_TEST:
              // Transition to READY if battery is healthy AND input voltage is above threshold
             if (batteryOk && obc.onBdChrgrUDc >= kMinVoltageThresholdV && obc.onBdChrgrHndlSt == OBC_STATE_READY) {
-                bms_t.charging_states = CHG_READY;
+                bms_t.charging_states = CHARGING_READY;
                 Serial.println("chrgrHndlSt:");
                 Serial.println(obc.onBdChrgrHndlSt);
                 Serial.println("STATE: -> READY (Test Passed, Input Voltage OK)");
@@ -623,7 +623,7 @@ void Update_Charging_State() {
             // Only fail if battery health check times out
             else if (!batteryOk && (nowMs - testStateEntryTimeMs > kTestStateTimeoutMs)) {
                  // Battery unhealthy and timeout exceeded -> FAIL
-                 bms_t.charging_states = CHG_FAIL;
+                 bms_t.charging_states = CHARGING_FAIL;
                  Serial.println("STATE: -> FAIL (Test Timeout: Battery Unhealthy)");
             }
             // else: Either waiting for battery to be healthy or for input voltage to reach 380V -> Remain in TEST
@@ -644,30 +644,30 @@ void Update_Charging_State() {
             }
             break;
 
-        case CHG_READY:
+        case CHARGING_READY:
              // Transition to START if button pressed AND battery healthy
             if (buttonPressed && digitalRead(kPreChargePin)) {
-                bms_t.charging_states = CHG_START;
+                bms_t.charging_states = CHARGING_START;
                 Serial.println("STATE: -> START (Button Pressed)");
             }
             // Transition back to FAIL if battery becomes unhealthy while waiting
             // if (!digitalRead(kSDCPin)) {
-            //     bms_t.charging_states = CHG_FAIL;
+            //     bms_t.charging_states = CHARGING_FAIL;
             //     Serial.println("STATE: -> FAIL (SDC open during READY)");
             // }
             break;
 
-        case CHG_START:
+        case CHARGING_START:
             // Check Precharge state
             if (!digitalRead(kPreChargePin)) {
-                bms_t.charging_states = CHG_FAIL;
+                bms_t.charging_states = CHARGING_FAIL;
                 Serial.println("STATE: -> FAIL (Precharge part not connected)");
                 break;
             }
             
             // Check for immediate fault conditions first (overvoltage)
             if (obc.onBdChrgrUDc > kOvervoltageThresholdV || obc.onBdChrgrSt == OBC_STATE_FAULT) {
-                bms_t.charging_states = CHG_FAIL;
+                bms_t.charging_states = CHARGING_FAIL;
                 Serial.printf("STATE: -> FAIL (Overvoltage detected: %.1fV > %.1fV)\n", 
                              obc.onBdChrgrUDc, kOvervoltageThresholdV);
                 break;
@@ -682,7 +682,7 @@ void Update_Charging_State() {
                 }
                 // Check if overcurrent has persisted long enough to trigger fault
                 else if (nowMs - overcurrentStartTimeMs > kOvercurrentTimeoutMs) {
-                    bms_t.charging_states = CHG_FAIL;
+                    bms_t.charging_states = CHARGING_FAIL;
                     Serial.printf("STATE: -> FAIL (Overcurrent persisted for >%dms: %.1fA > %dA)\n", 
                                  kOvercurrentTimeoutMs, obc.onBdChrgrIDc, currentLimit);
                     overcurrentStartTimeMs = 0; // Reset timer
@@ -707,12 +707,12 @@ void Update_Charging_State() {
             // Transition to FAIL if battery becomes unhealthy during charging
             // if (!batteryOk || !digitalRead(kSDCPin)) {
             if (!batteryOk) {
-                bms_t.charging_states = CHG_FAIL;
+                bms_t.charging_states = CHARGING_FAIL;
                 Serial.println("STATE: -> FAIL (Unhealthy during START)");
             }
             // Add conditions for stopping charge (e.g., BMS reports full, button pressed again?)
             // if (buttonPressed) { // Example: Allow stopping with button
-            //    bms_t.charging_states = CHG_READY;
+            //    bms_t.charging_states = CHARGING_READY;
             //    Serial.println("STATE: -> READY (Charge stopped by button)");
             // }
 
@@ -725,11 +725,11 @@ void Update_Charging_State() {
             }
             break;
 
-        case CHG_FAIL:
+        case CHARGING_FAIL:
             // Stay in FAIL state. Requires manual reset or condition clear.
             // Optional: Add logic to attempt recovery or transition back if health returns
             // if (batteryOk && (nowMs - lastStateChangeMs > 10000)) { // Example: Auto-retry after 10s if healthy
-            //    BMS_dev.charging_state = CHG_READY;
+            //    bms_t.charging_states = CHARGING_READY;
             //    Serial.println("STATE: -> READY (Recovered from FAIL)");
             // }
 
@@ -738,22 +738,22 @@ void Update_Charging_State() {
             break;
 
          default:
-             Serial.printf("WARN: Unknown charging state: %d\n", BMS_dev.charging_state);
-             BMS_dev.charging_state = CHG_FAIL; // Default to fail on unknown state
+             Serial.printf("WARN: Unknown charging state: %d\n", bms_t.charging_states);
+             bms_t.charging_states = CHARGING_FAIL; // Default to fail on unknown state
              break;
 
     } // end switch
 
     // If state changed, record the time
-    if (BMS_dev.charging_state != previousState) {
+    if (bms_t.charging_states != previousState) {
         lastStateChangeMs = nowMs;
         // Logging moved to printSystemStatus for periodic updates
-        // Serial.printf("DEBUG: Charging state changed to %d\n", BMS_dev.charging_state);
+        // Serial.printf("DEBUG: Charging state changed to %d\n", bms_t.charging_states);
 
         // Reset LED timer on state change for clean flashing start
         lastLedUpdateMs = nowMs;
         // Ensure Fault LED is OFF unless in FAIL state
-         if (BMS_dev.charging_state != CHG_FAIL) {
+         if (bms_t.charging_states != CHARGING_FAIL) {
              digitalWrite(kFaultLedPin, LOW);
          }
     }
