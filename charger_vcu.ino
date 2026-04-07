@@ -21,7 +21,8 @@
 // Define HV Battery Parameters
 #define HV_BATT_U_LIM_VOLTS 438   // Default value in volts
 #define HV_BATT_U_DC_VOLTS  300   // Default value in volts
-#define HV_BATT_CHRG_I_LIM_AMPS 1 // current limit in amps
+#define HV_BATT_CHRG_I_LIM_AMPS_HIGH 1.2 // current limit in amps
+#define HV_BATT_CHRG_I_LIM_AMPS_LOW 1 // current limit in amps
 
 // Define TWAI Queue Size
 #define TWAI_TX_QUEUE_SIZE 10
@@ -98,12 +99,24 @@ constexpr uint16_t hvBattChrgnILimTo13bit(uint16_t amps) {
 // Pre-calculate parts of the message data where possible
 constexpr uint16_t kHvBattULimBits = hvBattULimTo11bit(HV_BATT_U_LIM_VOLTS);
 constexpr uint16_t kHvBattUDcBits = hvBattUDcTo11bit(HV_BATT_U_DC_VOLTS);
-constexpr uint16_t kHvBattChrgnILimBits = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_LIM_AMPS);
+constexpr uint16_t kHvBattChrgnILimBits_HIGH = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_LIM_AMPS_HIGH);
+constexpr uint16_t kHvBattChrgnILimBits_LOW = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_LIM_AMPS_LOW);
 
 // --- CAN Message Send to OBC Configuration ---
 // Define fixed data arrays for enable/disable messages
 const uint8_t kEnableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC8, 0x00};
 const uint8_t kDisableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC0, 0x00};
+
+// Define fixed data arrays for charger current limits
+const uint8_t kChrgnILimHighData[8] = {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits_HIGH >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits_HIGH & 0xFF), 0xE0, 0x00};
+const uint8_t kChrgnILimLowData[8] = {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits_LOW >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits_LOW & 0xFF), 0xE0, 0x00};
+
+static bool currentLimitHigh = true; // Start with high limit
+const uint16_t Max_mv = 3417000;
+const uint16_t Min_mv = 3060000;
+const uint16_t Change_mv = 3345600;
+static float currentLimit = HV_BATT_CHRG_I_LIM_AMPS_HIGH;
+
 
 CANMessageConfig_t messageConfigs[] = {
     // ID, Length, Data (Template), Interval (ms), LastSentMs
@@ -112,7 +125,7 @@ CANMessageConfig_t messageConfigs[] = {
     {0x178, 8, {0x60, 0x00, 0x00, 0x00, 0x28, 0xC3, static_cast<uint8_t>((0b00011 << 3) | (kHvBattULimBits >> 8)), static_cast<uint8_t>(kHvBattULimBits & 0xFF)}, 70, 0}, // Parameters: HvBattULim
     {0x084, 8, {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC0, 0x00}, 25, 0}, // Output Control (default disable)
     {0x056, 8, {0x00, 0x02, 0x00, 0x00, 0x01, 0x61, 0x00, 0x00}, 15, 0}, // Vehicle Sim
-    {0x289, 8, {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits & 0xFF), 0xE0, 0x00}, 100, 0}, // Parameters: HvBattChrgnILim
+    {0x289, 8, {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits_HIGH >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits_HIGH & 0xFF), 0xE0, 0x00}, 100, 0}, // Parameters: HvBattChrgnILim (default High)
     {0x345, 8, {0x00, 0x00, 0x01, 0x01, 0xFE, 0x32, 0x32, 0x10}, 1000, 0}  // Parameters: HvBattPreHeatgReq (No Preheat)
 };
 
@@ -662,7 +675,7 @@ void Update_Charging_State() {
             
             // Check for timed fault conditions (overcurrent)
             static uint32_t overcurrentStartTimeMs = 0;
-            if (obc.onBdChrgrIDc > (HV_BATT_CHRG_I_LIM_AMPS + 0.5)) {
+            if (obc.onBdChrgrIDc > (currentLimit + 0.5)) {
                 // Start timing if this is the beginning of an overcurrent condition
                 if (overcurrentStartTimeMs == 0) {
                     overcurrentStartTimeMs = nowMs;
@@ -671,7 +684,7 @@ void Update_Charging_State() {
                 else if (nowMs - overcurrentStartTimeMs > kOvercurrentTimeoutMs) {
                     bms_t.charging_states = CHG_FAIL;
                     Serial.printf("STATE: -> FAIL (Overcurrent persisted for >%dms: %.1fA > %dA)\n", 
-                                 kOvercurrentTimeoutMs, obc.onBdChrgrIDc, HV_BATT_CHRG_I_LIM_AMPS);
+                                 kOvercurrentTimeoutMs, obc.onBdChrgrIDc, currentLimit);
                     overcurrentStartTimeMs = 0; // Reset timer
                     break;
                 }
@@ -681,7 +694,7 @@ void Update_Charging_State() {
                     static uint32_t lastOvercurrentWarningMs = 0;
                     if (nowMs - lastOvercurrentWarningMs > 200) { // Limit warning frequency
                         Serial.printf("WARNING: Overcurrent condition: %.1fA > %dA (for %dms)\n", 
-                                     obc.onBdChrgrIDc, HV_BATT_CHRG_I_LIM_AMPS, 
+                                     obc.onBdChrgrIDc, currentLimit, 
                                      nowMs - overcurrentStartTimeMs);
                         lastOvercurrentWarningMs = nowMs;
                     }
@@ -702,6 +715,14 @@ void Update_Charging_State() {
             //    bms_t.charging_states = CHG_READY;
             //    Serial.println("STATE: -> READY (Charge stopped by button)");
             // }
+
+            // Charge the current limit
+            if(bms_t.total_voltage_mV > Change_mv && currentLimitHigh){
+                currentLimitHigh = false;
+                messageConfigs[5].data = kChrgnILimLowData;
+                currentLimit = HV_BATT_CHRG_I_LIM_AMPS_LOW;
+                Serial.println("INFO: Reducing charge current limit due to voltage threshold.");
+            }
             break;
 
         case CHG_FAIL:
