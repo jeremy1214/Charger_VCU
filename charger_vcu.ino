@@ -143,6 +143,7 @@ void System_Health_Check_Task(void *pvParameters); // Changed loop content to a 
 void BMS_Monitor_Task(void *pvParameters);      // Changed loop content to a task
 void Check_BMS_Status();
 void Process_BMS_Message(const twai_message_t *message);
+void Process_OBC_Message(const twai_message_t *message);
 void Update_Charging_State();
 void updateChargingLed();
 bool isBatteryHealthy();
@@ -345,7 +346,7 @@ void CAN_Sender_Task(void *pvParameters) {
         } // end for loop
 
         // Delay until next check cycle
-        vTaskDelayUntil(&lastWakeTime, taskFrequency);
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 
@@ -360,7 +361,7 @@ void CAN_Receiver_Task(void *pvParameters){
             Process_BMS_Message(&message);
             
             // Process OBC messages to monitor values
-            processOBCMessage(&message);
+            Process_OBC_Message(&message);
         }
     }
 }
@@ -402,7 +403,7 @@ void Get_Bd_Chrgr(const uint8_t *data) {
     obc.onBdChrgrUDc = raw_udc * 0.2;
     
     uint16_t raw_idc = 0;
-    raw_idc = ((uint16_t)(>data[1] & 0b11111000) >> 3) | ((uint16_t)(data[0] & 0b01111111) << 5);
+    raw_idc = ((uint16_t)(data[1] & 0b11111000) >> 3) | ((uint16_t)(data[0] & 0b01111111) << 5);
     obc.onBdChrgrIDc = (raw_idc * 0.1) - 200.0; // Apply scaling and offset
     
     // Extract OnBdChrgrUAct - Correct
@@ -439,7 +440,7 @@ void Get_Current_State(const uint8_t *data) {
     obc.onBdChrgrSt = raw_OBCSt; // Store the state
 }
 
-void processOBCMessage(const twai_message_t *message) {
+void Process_OBC_Message(const twai_message_t *message) {
     const uint16_t id = static_cast<uint16_t>(message->identifier);
     const uint8_t *data = message->data;
 
@@ -501,7 +502,7 @@ void System_Health_Check_Task(void *pvParameters) {
 
 void BMS_Monitor_Task(void *pvParameters) {
     TickType_t lastWakeTime = xTaskGetTickCount();
-    const TickType_t taskFrequency = pdMS_TO_TICKS(kBMSMonitorIntervalMs);
+    const TickType_t taskFrequency = pdMS_TO_TICKS(kBmsCheckIntervalMs);
     
     while (true) {
         bms_normal = bms_t.bms_states == BMS_NORMAL;
@@ -563,7 +564,7 @@ bool isBatteryHealthy() {
     bool isHealthy = true; // Default to healthy
     
     // Check BMS library reported faults
-    if (bms.bms_states == BMS_SENSOR_FAULT) { //
+    if (bms_t.bms_states == BMS_SENSOR_FAULT) { //
         isHealthy = false;
     }
     
@@ -719,7 +720,7 @@ void Update_Charging_State() {
             // Charge the current limit
             if(bms_t.total_voltage_mV > Change_mv && currentLimitHigh){
                 currentLimitHigh = false;
-                messageConfigs[5].data = kChrgnILimLowData;
+                memcpy(messageConfigs[5].data, kChrgnILimLowData, 8);
                 currentLimit = HV_BATT_CHRG_I_LIM_AMPS_LOW;
                 Serial.println("INFO: Reducing charge current limit due to voltage threshold.");
             }

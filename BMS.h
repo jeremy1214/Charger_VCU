@@ -92,6 +92,6 @@ void BMS_Init();
 BMS_STATES BMS_Check_Fault();
 void BMS_Update_Volt();
 void BMS_Update_State();
-void BMS_Get_CAN_Message(twai_message_t *message);
+void BMS_Get_CAN_Message(const twai_message_t *message);
 void Get_BMS_IC_Info(uint8_t ic);
 void BMS_Update_Data();
