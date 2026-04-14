@@ -3,7 +3,6 @@
 #include <freertos/FreeRTOS.h> // Use FreeRTOS includes for task functions
 #include <freertos/task.h>
 
-#include "BMS.h"
 
 // GPIO pin definitions
 #include <cstdint>
@@ -132,7 +131,6 @@ CANMessageConfig_t messageConfigs[] = {
 // Calculate the number of messages in the configuration array
 const size_t kNumMessages = sizeof(messageConfigs) / sizeof(CANMessageConfig_t);
 
-extern BMS_t bms_t;
 bool bms_normal;
 
 // ----------------- Function Prototypes -----------------
@@ -140,9 +138,6 @@ bool Init_CAN();
 void CAN_Sender_Task(void *pvParameters);
 void CAN_Receiver_Task(void *pvParameters);
 void System_Health_Check_Task(void *pvParameters); // Changed loop content to a task
-void BMS_Monitor_Task(void *pvParameters);      // Changed loop content to a task
-void Check_BMS_Status();
-void Process_BMS_Message(const twai_message_t *message);
 void Process_OBC_Message(const twai_message_t *message);
 void Update_Charging_State();
 void updateChargingLed();
@@ -158,21 +153,21 @@ void setup() {
     Serial.println("\n--- ESP32 CAN BMS Charger Controller ---");
 
     // pinMode(kSDCPin, INPUT_PULLUP);
-    pinMode(kFaultLedPin, OUTPUT);
-    digitalWrite(kFaultLedPin, LOW); // Start with LED off
+    // pinMode(kFaultLedPin, OUTPUT);
+    // digitalWrite(kFaultLedPin, LOW); // Start with LED off
 
-    pinMode(kStartButtonPin, INPUT_PULLUP);
+    // pinMode(kStartButtonPin, INPUT_PULLUP);
 
-    pinMode(kChargingLedPin, OUTPUT);
-    digitalWrite(kChargingLedPin, LOW);
+    // pinMode(kChargingLedPin, OUTPUT);
+    // digitalWrite(kChargingLedPin, LOW);
     
-    pinMode(kBatteryHealthPin, OUTPUT);
-    digitalWrite(kBatteryHealthPin, LOW); // Start with battery health indicator off
+    // pinMode(kBatteryHealthPin, OUTPUT);
+    // digitalWrite(kBatteryHealthPin, LOW); // Start with battery health indicator off
 
-    pinMode(kBMSFaultPin, OUTPUT);
-    digitalWrite(kBMSFaultPin, HIGH); // Start with BMS normal
+    // pinMode(kBMSFaultPin, OUTPUT);
+    // digitalWrite(kBMSFaultPin, HIGH); // Start with BMS normal
 
-    pinMode(kPreChargePin, INPUT_PULLUP);
+    // pinMode(kPreChargePin, INPUT_PULLUP);
 
     if(!Init_CAN()) {
         Serial.println("Failed to initialize CAN");
@@ -182,8 +177,8 @@ void setup() {
         }
     }
 
-    BMS_Init();
-    Serial.println("BMS initialized.");
+    // BMS_Init();
+    // Serial.println("BMS initialized.");
 
     // --- Create FreeRTOS tasks ---
     xTaskCreatePinnedToCore(
@@ -206,25 +201,7 @@ void setup() {
         0                // Core ID (Core 0)
     );
 
-     xTaskCreatePinnedToCore(
-        BMS_Monitor_Task,
-        "BMS_Mon",       // Task name
-        3072,            // Stack size (adjust based on printf usage)
-        NULL,            // Parameters
-        2,               // Priority
-        NULL,            // Task handle
-        1                // Core ID (Core 1 - separate from CAN)
-    );
 
-    xTaskCreatePinnedToCore(
-        System_Health_Check_Task,
-        "Sys_Health",    // Task name
-        2048,            // Stack size
-        NULL,            // Parameters
-        1,               // Priority (lower)
-        NULL,            // Task handle
-        1                // Core ID (Core 1)
-    );
 
 
     Serial.println("System Setup Complete. Tasks Running.");
@@ -275,14 +252,14 @@ bool Init_CAN() {
         twai_driver_uninstall(); // Clean up if start fails
         return false;
     }
-    Serial.println("TWAI driver started successfully at 500 kbit/s.");
+    Serial.printf("TWAI driver started successfully at 500 kbit/s.\n");
     return true;
     // Add your CAN initialization code here
 }
 
 void CAN_Sender_Task(void *pvParameters) {
     // Add your CAN sender code here
-    TickType xLastWakeTime = xTaskGetTickCount(); // Initialize xLastWakeTime
+    TickType_t xLastWakeTime = xTaskGetTickCount(); // Initialize xLastWakeTime
     const TickType_t xFrequency = pdMS_TO_TICKS(5); // Adjust the frequency as needed
 
     twai_message_t txMessage;
@@ -305,25 +282,27 @@ void CAN_Sender_Task(void *pvParameters) {
                 switch (messageConfigs[i].id) {
                     case 0x51A: // Wake-up Message
                         // Always send this message periodically
+                        // Serial.printf("Sending Wake-up Message\n");
                         sendMessage = true;
                         break;
 
                     case 0x084: // Output Control Message
                         // Data depends on charging state
-                        if (bms_t.charging_states == CHG_START) { //
-                            dataToSend = kEnableOutputData;
-                        } else {
-                            dataToSend = kDisableOutputData;
-                        }
+                        // if (bms_t.charging_states == CHG_START) { //
+                        //     dataToSend = kEnableOutputData;
+                        // } else {
+                        //     dataToSend = kDisableOutputData;
+                        // }
                         // Always send this control message periodically
+                        // Serial.printf("Sending Output Control Message//test not sending\n");
                         sendMessage = true;
                         break;
 
                     default: // Other periodic messages
                         // Send only when actively charging
-                        if (bms_t.charging_states == CHG_START) { //
-                            sendMessage = true;
-                        }
+                        // if (bms_t.charging_states == CHG_START) { //
+                        //     sendMessage = true;
+                        // }
                         break;
                 }
 
@@ -333,7 +312,9 @@ void CAN_Sender_Task(void *pvParameters) {
                     esp_err_t result = twai_transmit(&txMessage, kCanTimeoutTicks);
                     if (result == ESP_OK) {
                         messageConfigs[i].lastSentMs = currentTimeMs; // Update last sent time on success
+                        Serial.printf("Sent CAN message 0x%lX\n", txMessage.identifier);
                     } else {
+                        // Serial.println("Failed to send CAN message");
                         // Log error infrequently to avoid spamming
                         static uint32_t lastTxErrorLog = 0;
                         if (currentTimeMs - lastTxErrorLog > 1000) {
@@ -358,18 +339,11 @@ void CAN_Receiver_Task(void *pvParameters){
         esp_err_t result = twai_receive(&message, portMAX_DELAY);
 
         if (result == ESP_OK) {
-            // Process BMS messages as before
-            Process_BMS_Message(&message);
             
             // Process OBC messages to monitor values
             Process_OBC_Message(&message);
         }
     }
-}
-
-void Process_BMS_Message(const twai_message_t *message) {
-    // Process BMS messages as before
-    BMS_Get_CAN_Message(message);
 }
 
 typedef struct 
@@ -447,12 +421,15 @@ void Process_OBC_Message(const twai_message_t *message) {
 
     switch (id){
         case 0x12A:
+            Serial.println("Received OBC Charger Status Message (0x12A)");
             Get_Bd_Chrgr(data);
             break;
         case 0x218:
+        Serial.println("Received OBC State Message (0x218)");
             Get_Bd_State(data);
             break;
         case 0x216:
+        Serial.println("Received OBC Current State Message (0x216)");
             Get_Current_State(data);
             break;
         default:
@@ -460,309 +437,274 @@ void Process_OBC_Message(const twai_message_t *message) {
     }
 }
 
-void System_Health_Check_Task(void *pvParameters) {
-     TickType_t lastWakeTime = xTaskGetTickCount();
-     const TickType_t taskFrequency = pdMS_TO_TICKS(kHealthCheckIntervalMs);
+// void System_Health_Check_Task(void *pvParameters) {
+//      TickType_t lastWakeTime = xTaskGetTickCount();
+//      const TickType_t taskFrequency = pdMS_TO_TICKS(kHealthCheckIntervalMs);
 
-    while(true) {
-         // Wait for the next cycle
-        vTaskDelayUntil(&lastWakeTime, taskFrequency);
+//     while(true) {
+//          // Wait for the next cycle
+//         vTaskDelayUntil(&lastWakeTime, taskFrequency);
 
-        // Check CAN controller status
-        twai_status_info_t status_info;
-        esp_err_t result = twai_get_status_info(&status_info);
+//         // Check CAN controller status
+//         twai_status_info_t status_info;
+//         esp_err_t result = twai_get_status_info(&status_info);
 
-        if (result == ESP_OK) {
-            // Optional: Log detailed status less frequently if needed
-            // Serial.printf("DEBUG: CAN Status: State=%d, TXerr=%d, RXerr=%d, TXq=%d, RXq=%d, Rcvd=%d, Sent=%d\n",
-            //       status_info.state, status_info.tx_error_counter, status_info.rx_error_counter,
-            //       status_info.msgs_to_tx, status_info.msgs_to_rx,
-            //       status_info.rx_msg_count, status_info.tx_msg_count);
+//         if (result == ESP_OK) {
+//             // Optional: Log detailed status less frequently if needed
+//             // Serial.printf("DEBUG: CAN Status: State=%d, TXerr=%d, RXerr=%d, TXq=%d, RXq=%d, Rcvd=%d, Sent=%d\n",
+//             //       status_info.state, status_info.tx_error_counter, status_info.rx_error_counter,
+//             //       status_info.msgs_to_tx, status_info.msgs_to_rx,
+//             //       status_info.rx_msg_count, status_info.tx_msg_count);
 
-            if (status_info.state == TWAI_STATE_BUS_OFF) {
-                Serial.println("ERROR: CAN bus-off detected! Attempting recovery...");
-                result = twai_initiate_recovery(); // Attempt recovery
-                Serial.printf("INFO: CAN recovery attempt result: %s\n", esp_err_to_name(result));
-                // Consider more robust recovery (e.g., re-init after repeated failures)
-            } else if (status_info.state == TWAI_STATE_RECOVERING) {
-                Serial.println("INFO: CAN bus is recovering...");
-            } else if (status_info.tx_error_counter > 127 || status_info.rx_error_counter > 127) {
-                 Serial.printf("WARN: High CAN error count (TX:%d, RX:%d). State: %d\n",
-                       status_info.tx_error_counter, status_info.rx_error_counter, status_info.state);
-                 // Potentially trigger a warning state or investigation
-            }
-        } else {
-             Serial.printf("ERROR: Failed to get TWAI status: %s\n", esp_err_to_name(result));
-        }
+//             if (status_info.state == TWAI_STATE_BUS_OFF) {
+//                 Serial.println("ERROR: CAN bus-off detected! Attempting recovery...");
+//                 result = twai_initiate_recovery(); // Attempt recovery
+//                 Serial.printf("INFO: CAN recovery attempt result: %s\n", esp_err_to_name(result));
+//                 // Consider more robust recovery (e.g., re-init after repeated failures)
+//             } else if (status_info.state == TWAI_STATE_RECOVERING) {
+//                 Serial.println("INFO: CAN bus is recovering...");
+//             } else if (status_info.tx_error_counter > 127 || status_info.rx_error_counter > 127) {
+//                  Serial.printf("WARN: High CAN error count (TX:%d, RX:%d). State: %d\n",
+//                        status_info.tx_error_counter, status_info.rx_error_counter, status_info.state);
+//                  // Potentially trigger a warning state or investigation
+//             }
+//         } else {
+//              Serial.printf("ERROR: Failed to get TWAI status: %s\n", esp_err_to_name(result));
+//         }
 
-        // Add other health checks here (e.g., stack high water mark, temperature sensor)
-        // UBaseType_t stackHighWater = uxTaskGetStackHighWaterMark(NULL); // Check own stack
-        // Serial.printf("DEBUG: SysHealth Task Stack HWM: %u words\n", stackHighWater);
-    }
-}
+//         // Add other health checks here (e.g., stack high water mark, temperature sensor)
+//         // UBaseType_t stackHighWater = uxTaskGetStackHighWaterMark(NULL); // Check own stack
+//         // Serial.printf("DEBUG: SysHealth Task Stack HWM: %u words\n", stackHighWater);
+//     }
+// }
 
-void BMS_Monitor_Task(void *pvParameters) {
-    TickType_t lastWakeTime = xTaskGetTickCount();
-    const TickType_t taskFrequency = pdMS_TO_TICKS(kBmsCheckIntervalMs);
+// void updateChargingLed() {
+//     uint32_t now_Ms = millis();
+
+//     switch (bms_t.charging_states) {
+//         case CHARGING_TEST: // Fast flash
+//             if (now_Ms - lastLedUpdateMs > kTestLedIntervalMs) {
+//                 digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
+//                 lastLedUpdateMs = now_Ms;
+//             }
+//             break;
+
+//         case CHARGING_READY: // Slow flash
+//             if (now_Ms - lastLedUpdateMs > kReadyLedIntervalMs) {
+//                 digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
+//                 lastLedUpdateMs = now_Ms;
+//             }
+//             break;
+
+//         case CHARGING_START: // Solid ON
+//             digitalWrite(kChargingLedPin, HIGH);
+//             break;
+
+//         case CHARGING_INIT: // Off
+//         case CHARGING_FAIL:    // Off (Fault LED handles fail indication)
+//         default:          // Off
+//             digitalWrite(kChargingLedPin, LOW);
+//             break;
+//     }
+// }
+
+// bool isBatteryHealthy() {
+//     bool isHealthy = true; // Default to healthy
     
-    while (true) {
-        bms_normal = bms_t.bms_states == BMS_NORMAL;
-
-        // LED lighting is bms normal
-        digitalWrite(kBMSFaultPin, bms_normal ? HIGH : LOW);
-
-        vTaskDelayUntil(&lastWakeTime, taskFrequency);
-
-        Check_BMS_Status();
-
-        updateChargingLed();
-
-        static uint32_t last_print_time_Ms = 0;
-        uint32_t now_Ms = millis();
-        if(now_Ms - last_print_time_Ms > 1000) {
-            printSystemStatus();
-            last_print_time_Ms = now_Ms;
-        }
-    }
-}
-
-void Check_BMS_Status() {
-    BMS_Update_Data();
-    Update_Charging_State();
-}
-
-void updateChargingLed() {
-    uint32_t now_Ms = millis();
-
-    switch (bms_t.charging_states) {
-        case CHARGING_TEST: // Fast flash
-            if (now_Ms - lastLedUpdateMs > kTestLedIntervalMs) {
-                digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
-                lastLedUpdateMs = now_Ms;
-            }
-            break;
-
-        case CHARGING_READY: // Slow flash
-            if (now_Ms - lastLedUpdateMs > kReadyLedIntervalMs) {
-                digitalWrite(kChargingLedPin, !digitalRead(kChargingLedPin));
-                lastLedUpdateMs = now_Ms;
-            }
-            break;
-
-        case CHARGING_START: // Solid ON
-            digitalWrite(kChargingLedPin, HIGH);
-            break;
-
-        case CHARGING_INIT: // Off
-        case CHARGING_FAIL:    // Off (Fault LED handles fail indication)
-        default:          // Off
-            digitalWrite(kChargingLedPin, LOW);
-            break;
-    }
-}
-
-bool isBatteryHealthy() {
-    bool isHealthy = true; // Default to healthy
+//     // Check BMS library reported faults
+//     if (bms_t.bms_states == BMS_SENSOR_FAULT) { //
+//         isHealthy = false;
+//     }
     
-    // Check BMS library reported faults
-    if (bms_t.bms_states == BMS_SENSOR_FAULT) { //
-        isHealthy = false;
-    }
+//     // Update the battery health indicator pin
+//     digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
     
-    // Update the battery health indicator pin
-    digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
+//     return isHealthy; // Return the health status
+// }
+
+// void Update_Charging_State() {
+//     static uint32_t lastStateChangeMs = 0;
+//     static bool lastButtonState = HIGH; // Assuming INPUT_PULLUP
+//     static uint32_t testStateEntryTimeMs = 0; // *** NEW: Timestamp for entering TEST state ***
+//     uint32_t nowMs = millis();
+
+//     // Check button state (simple debounce check)
+//     bool currentButtonState = digitalRead(kStartButtonPin);
+//     bool buttonPressed = (currentButtonState == LOW && lastButtonState == HIGH);
+//     lastButtonState = currentButtonState; // Update for next cycle
+
+//     // Check battery health
+//     bool batteryOk = isBatteryHealthy();
     
-    return isHealthy; // Return the health status
-}
+//     //************************************************************************
+//     //bool batteryOk = true; // For testing, assume battery is always healthy
+//     //************************************************************************
 
-void Update_Charging_State() {
-    static uint32_t lastStateChangeMs = 0;
-    static bool lastButtonState = HIGH; // Assuming INPUT_PULLUP
-    static uint32_t testStateEntryTimeMs = 0; // *** NEW: Timestamp for entering TEST state ***
-    uint32_t nowMs = millis();
+//     // Prevent rapid state changes, but allow immediate transition *to* FAIL
+//     CHARGING_STATES currentState = bms_t.charging_states; // Read current state once
+//     if (currentState != CHARGING_FAIL && (nowMs - lastStateChangeMs < kStateChangeMinIntervalMs)) {
+//        // If not failing and minimum interval hasn't passed, return
+//        // (This prevents flickering between non-fail states)
+//        return;
+//     }
 
-    // Check button state (simple debounce check)
-    bool currentButtonState = digitalRead(kStartButtonPin);
-    bool buttonPressed = (currentButtonState == LOW && lastButtonState == HIGH);
-    lastButtonState = currentButtonState; // Update for next cycle
+//     CHARGING_STATES previousState = currentState; // Store state before switch
 
-    // Check battery health
-    bool batteryOk = isBatteryHealthy();
-    
-    //************************************************************************
-    //bool batteryOk = true; // For testing, assume battery is always healthy
-    //************************************************************************
+//     switch (currentState) {
+//         case CHARGING_INIT:
+//             // Transition to TEST once BMS is initialized and normal
+//             if (bms_t.bms_states == BMS_NORMAL) {
+//                 bms_t.charging_states = CHARGING_TEST;
+//                 testStateEntryTimeMs = nowMs; // *** Record entry time ***
+//                 Serial.println("STATE: -> TEST");
+//             }
+//             // Stay initial if BMS not ready yet
+//             break;
 
-    // Prevent rapid state changes, but allow immediate transition *to* FAIL
-    CHARGING_STATES currentState = bms_t.charging_states; // Read current state once
-    if (currentState != CHARGING_FAIL && (nowMs - lastStateChangeMs < kStateChangeMinIntervalMs)) {
-       // If not failing and minimum interval hasn't passed, return
-       // (This prevents flickering between non-fail states)
-       return;
-    }
+//         case CHARGING_TEST:
+//              // Transition to READY if battery is healthy AND input voltage is above threshold
+//             if (batteryOk && obc.onBdChrgrUDc >= kMinVoltageThresholdV && obc.onBdChrgrHndlSt == OBC_STATE_READY) {
+//                 bms_t.charging_states = CHARGING_READY;
+//                 Serial.println("chrgrHndlSt:");
+//                 Serial.println(obc.onBdChrgrHndlSt);
+//                 Serial.println("STATE: -> READY (Test Passed, Input Voltage OK)");
+//             }
+//             // Only fail if battery health check times out
+//             else if (!batteryOk && (nowMs - testStateEntryTimeMs > kTestStateTimeoutMs)) {
+//                  // Battery unhealthy and timeout exceeded -> FAIL
+//                  bms_t.charging_states = CHARGING_FAIL;
+//                  Serial.println("STATE: -> FAIL (Test Timeout: Battery Unhealthy)");
+//             }
+//             // else: Either waiting for battery to be healthy or for input voltage to reach 380V -> Remain in TEST
+//             else {
+//                 // Add periodic status update when in TEST state
+//                 static uint32_t lastTestStateUpdateMs = 0;
+//                 if (nowMs - lastTestStateUpdateMs > 5000) { // Update every 5 seconds
+//                     if (!batteryOk) {
+//                         Serial.printf("STATE: TEST - Waiting for battery health (timeout in %.1fs)\n", 
+//                                      (kTestStateTimeoutMs - (nowMs - testStateEntryTimeMs)) / 1000.0);
+//                     } 
+//                     else if (obc.onBdChrgrUDc < kMinVoltageThresholdV) {
+//                         Serial.printf("STATE: TEST - Waiting for input voltage (%.1fV) to reach %.1fV (no timeout)\n", 
+//                                      obc.onBdChrgrUDc, (float)kMinVoltageThresholdV);
+//                     }
+//                     lastTestStateUpdateMs = nowMs;
+//                 }
+//             }
+//             break;
 
-    CHARGING_STATES previousState = currentState; // Store state before switch
+//         case CHARGING_READY:
+//              // Transition to START if button pressed AND battery healthy
+//             if (buttonPressed && digitalRead(kPreChargePin)) {
+//                 bms_t.charging_states = CHARGING_START;
+//                 Serial.println("STATE: -> START (Button Pressed)");
+//             }
+//             // Transition back to FAIL if battery becomes unhealthy while waiting
+//             // if (!digitalRead(kSDCPin)) {
+//             //     bms_t.charging_states = CHARGING_FAIL;
+//             //     Serial.println("STATE: -> FAIL (SDC open during READY)");
+//             // }
+//             break;
 
-    switch (currentState) {
-        case CHARGING_INIT:
-            // Transition to TEST once BMS is initialized and normal
-            if (bms_t.bms_states == BMS_NORMAL) {
-                bms_t.charging_states = CHARGING_TEST;
-                testStateEntryTimeMs = nowMs; // *** Record entry time ***
-                Serial.println("STATE: -> TEST");
-            }
-            // Stay initial if BMS not ready yet
-            break;
-
-        case CHARGING_TEST:
-             // Transition to READY if battery is healthy AND input voltage is above threshold
-            if (batteryOk && obc.onBdChrgrUDc >= kMinVoltageThresholdV && obc.onBdChrgrHndlSt == OBC_STATE_READY) {
-                bms_t.charging_states = CHARGING_READY;
-                Serial.println("chrgrHndlSt:");
-                Serial.println(obc.onBdChrgrHndlSt);
-                Serial.println("STATE: -> READY (Test Passed, Input Voltage OK)");
-            }
-            // Only fail if battery health check times out
-            else if (!batteryOk && (nowMs - testStateEntryTimeMs > kTestStateTimeoutMs)) {
-                 // Battery unhealthy and timeout exceeded -> FAIL
-                 bms_t.charging_states = CHARGING_FAIL;
-                 Serial.println("STATE: -> FAIL (Test Timeout: Battery Unhealthy)");
-            }
-            // else: Either waiting for battery to be healthy or for input voltage to reach 380V -> Remain in TEST
-            else {
-                // Add periodic status update when in TEST state
-                static uint32_t lastTestStateUpdateMs = 0;
-                if (nowMs - lastTestStateUpdateMs > 5000) { // Update every 5 seconds
-                    if (!batteryOk) {
-                        Serial.printf("STATE: TEST - Waiting for battery health (timeout in %.1fs)\n", 
-                                     (kTestStateTimeoutMs - (nowMs - testStateEntryTimeMs)) / 1000.0);
-                    } 
-                    else if (obc.onBdChrgrUDc < kMinVoltageThresholdV) {
-                        Serial.printf("STATE: TEST - Waiting for input voltage (%.1fV) to reach %.1fV (no timeout)\n", 
-                                     obc.onBdChrgrUDc, (float)kMinVoltageThresholdV);
-                    }
-                    lastTestStateUpdateMs = nowMs;
-                }
-            }
-            break;
-
-        case CHARGING_READY:
-             // Transition to START if button pressed AND battery healthy
-            if (buttonPressed && digitalRead(kPreChargePin)) {
-                bms_t.charging_states = CHARGING_START;
-                Serial.println("STATE: -> START (Button Pressed)");
-            }
-            // Transition back to FAIL if battery becomes unhealthy while waiting
-            // if (!digitalRead(kSDCPin)) {
-            //     bms_t.charging_states = CHARGING_FAIL;
-            //     Serial.println("STATE: -> FAIL (SDC open during READY)");
-            // }
-            break;
-
-        case CHARGING_START:
-            // Check Precharge state
-            if (!digitalRead(kPreChargePin)) {
-                bms_t.charging_states = CHARGING_FAIL;
-                Serial.println("STATE: -> FAIL (Precharge part not connected)");
-                break;
-            }
+//         case CHARGING_START:
+//             // Check Precharge state
+//             if (!digitalRead(kPreChargePin)) {
+//                 bms_t.charging_states = CHARGING_FAIL;
+//                 Serial.println("STATE: -> FAIL (Precharge part not connected)");
+//                 break;
+//             }
             
-            // Check for immediate fault conditions first (overvoltage)
-            if (obc.onBdChrgrUDc > kOvervoltageThresholdV || obc.onBdChrgrSt == OBC_STATE_FAULT) {
-                bms_t.charging_states = CHARGING_FAIL;
-                Serial.printf("STATE: -> FAIL (Overvoltage detected: %.1fV > %.1fV)\n", 
-                             obc.onBdChrgrUDc, kOvervoltageThresholdV);
-                break;
-            }
+//             // Check for immediate fault conditions first (overvoltage)
+//             if (obc.onBdChrgrUDc > kOvervoltageThresholdV || obc.onBdChrgrSt == OBC_STATE_FAULT) {
+//                 bms_t.charging_states = CHARGING_FAIL;
+//                 Serial.printf("STATE: -> FAIL (Overvoltage detected: %.1fV > %.1fV)\n", 
+//                              obc.onBdChrgrUDc, kOvervoltageThresholdV);
+//                 break;
+//             }
             
-            // Check for timed fault conditions (overcurrent)
-            static uint32_t overcurrentStartTimeMs = 0;
-            if (obc.onBdChrgrIDc > (currentLimit + 0.5)) {
-                // Start timing if this is the beginning of an overcurrent condition
-                if (overcurrentStartTimeMs == 0) {
-                    overcurrentStartTimeMs = nowMs;
-                }
-                // Check if overcurrent has persisted long enough to trigger fault
-                else if (nowMs - overcurrentStartTimeMs > kOvercurrentTimeoutMs) {
-                    bms_t.charging_states = CHARGING_FAIL;
-                    Serial.printf("STATE: -> FAIL (Overcurrent persisted for >%dms: %.1fA > %dA)\n", 
-                                 kOvercurrentTimeoutMs, obc.onBdChrgrIDc, currentLimit);
-                    overcurrentStartTimeMs = 0; // Reset timer
-                    break;
-                }
-                // Still in overcurrent but timeout not reached yet
-                else {
-                    // Optional: Add warning log
-                    static uint32_t lastOvercurrentWarningMs = 0;
-                    if (nowMs - lastOvercurrentWarningMs > 200) { // Limit warning frequency
-                        Serial.printf("WARNING: Overcurrent condition: %.1fA > %dA (for %dms)\n", 
-                                     obc.onBdChrgrIDc, currentLimit, 
-                                     nowMs - overcurrentStartTimeMs);
-                        lastOvercurrentWarningMs = nowMs;
-                    }
-                }
-            } else {
-                // Reset overcurrent timer if current is back to normal
-                overcurrentStartTimeMs = 0;
-            }
+//             // Check for timed fault conditions (overcurrent)
+//             static uint32_t overcurrentStartTimeMs = 0;
+//             if (obc.onBdChrgrIDc > (currentLimit + 0.5)) {
+//                 // Start timing if this is the beginning of an overcurrent condition
+//                 if (overcurrentStartTimeMs == 0) {
+//                     overcurrentStartTimeMs = nowMs;
+//                 }
+//                 // Check if overcurrent has persisted long enough to trigger fault
+//                 else if (nowMs - overcurrentStartTimeMs > kOvercurrentTimeoutMs) {
+//                     bms_t.charging_states = CHARGING_FAIL;
+//                     Serial.printf("STATE: -> FAIL (Overcurrent persisted for >%dms: %.1fA > %dA)\n", 
+//                                  kOvercurrentTimeoutMs, obc.onBdChrgrIDc, currentLimit);
+//                     overcurrentStartTimeMs = 0; // Reset timer
+//                     break;
+//                 }
+//                 // Still in overcurrent but timeout not reached yet
+//                 else {
+//                     // Optional: Add warning log
+//                     static uint32_t lastOvercurrentWarningMs = 0;
+//                     if (nowMs - lastOvercurrentWarningMs > 200) { // Limit warning frequency
+//                         Serial.printf("WARNING: Overcurrent condition: %.1fA > %dA (for %dms)\n", 
+//                                      obc.onBdChrgrIDc, currentLimit, 
+//                                      nowMs - overcurrentStartTimeMs);
+//                         lastOvercurrentWarningMs = nowMs;
+//                     }
+//                 }
+//             } else {
+//                 // Reset overcurrent timer if current is back to normal
+//                 overcurrentStartTimeMs = 0;
+//             }
             
-            // Transition to FAIL if battery becomes unhealthy during charging
-            // if (!batteryOk || !digitalRead(kSDCPin)) {
-            if (!batteryOk) {
-                bms_t.charging_states = CHARGING_FAIL;
-                Serial.println("STATE: -> FAIL (Unhealthy during START)");
-            }
-            // Add conditions for stopping charge (e.g., BMS reports full, button pressed again?)
-            // if (buttonPressed) { // Example: Allow stopping with button
-            //    bms_t.charging_states = CHARGING_READY;
-            //    Serial.println("STATE: -> READY (Charge stopped by button)");
-            // }
+//             // Transition to FAIL if battery becomes unhealthy during charging
+//             // if (!batteryOk || !digitalRead(kSDCPin)) {
+//             if (!batteryOk) {
+//                 bms_t.charging_states = CHARGING_FAIL;
+//                 Serial.println("STATE: -> FAIL (Unhealthy during START)");
+//             }
+//             // Add conditions for stopping charge (e.g., BMS reports full, button pressed again?)
+//             // if (buttonPressed) { // Example: Allow stopping with button
+//             //    bms_t.charging_states = CHARGING_READY;
+//             //    Serial.println("STATE: -> READY (Charge stopped by button)");
+//             // }
 
-            // Charge the current limit
-            if(bms_t.total_voltage_mV > Change_mv && currentLimitHigh){
-                currentLimitHigh = false;
-                memcpy(messageConfigs[5].data, kChrgnILimLowData, 8);
-                currentLimit = HV_BATT_CHRG_I_LIM_AMPS_LOW;
-                Serial.println("INFO: Reducing charge current limit due to voltage threshold.");
-            }
-            break;
+//             // Charge the current limit
+//             if(bms_t.total_voltage_mV > Change_mv && currentLimitHigh){
+//                 currentLimitHigh = false;
+//                 memcpy(messageConfigs[5].data, kChrgnILimLowData, 8);
+//                 currentLimit = HV_BATT_CHRG_I_LIM_AMPS_LOW;
+//                 Serial.println("INFO: Reducing charge current limit due to voltage threshold.");
+//             }
+//             break;
 
-        case CHARGING_FAIL:
-            // Stay in FAIL state. Requires manual reset or condition clear.
-            // Optional: Add logic to attempt recovery or transition back if health returns
-            // if (batteryOk && (nowMs - lastStateChangeMs > 10000)) { // Example: Auto-retry after 10s if healthy
-            //    bms_t.charging_states = CHARGING_READY;
-            //    Serial.println("STATE: -> READY (Recovered from FAIL)");
-            // }
+//         case CHARGING_FAIL:
+//             // Stay in FAIL state. Requires manual reset or condition clear.
+//             // Optional: Add logic to attempt recovery or transition back if health returns
+//             // if (batteryOk && (nowMs - lastStateChangeMs > 10000)) { // Example: Auto-retry after 10s if healthy
+//             //    bms_t.charging_states = CHARGING_READY;
+//             //    Serial.println("STATE: -> READY (Recovered from FAIL)");
+//             // }
 
-            // Ensure fault LED is ON
-            digitalWrite(kFaultLedPin, HIGH);
-            break;
+//             // Ensure fault LED is ON
+//             digitalWrite(kFaultLedPin, HIGH);
+//             break;
 
-         default:
-             Serial.printf("WARN: Unknown charging state: %d\n", bms_t.charging_states);
-             bms_t.charging_states = CHARGING_FAIL; // Default to fail on unknown state
-             break;
+//          default:
+//              Serial.printf("WARN: Unknown charging state: %d\n", bms_t.charging_states);
+//              bms_t.charging_states = CHARGING_FAIL; // Default to fail on unknown state
+//              break;
 
-    } // end switch
+//     } // end switch
 
-    // If state changed, record the time
-    if (bms_t.charging_states != previousState) {
-        lastStateChangeMs = nowMs;
-        // Logging moved to printSystemStatus for periodic updates
-        // Serial.printf("DEBUG: Charging state changed to %d\n", bms_t.charging_states);
+//     // If state changed, record the time
+//     if (bms_t.charging_states != previousState) {
+//         lastStateChangeMs = nowMs;
+//         // Logging moved to printSystemStatus for periodic updates
+//         // Serial.printf("DEBUG: Charging state changed to %d\n", bms_t.charging_states);
 
-        // Reset LED timer on state change for clean flashing start
-        lastLedUpdateMs = nowMs;
-        // Ensure Fault LED is OFF unless in FAIL state
-         if (bms_t.charging_states != CHARGING_FAIL) {
-             digitalWrite(kFaultLedPin, LOW);
-         }
-    }
+//         // Reset LED timer on state change for clean flashing start
+//         lastLedUpdateMs = nowMs;
+//         // Ensure Fault LED is OFF unless in FAIL state
+//          if (bms_t.charging_states != CHARGING_FAIL) {
+//              digitalWrite(kFaultLedPin, LOW);
+//          }
+//     }
 
-} // end Update_Charging_State
-
-
-
-
-
+// } // end Update_Charging_State
