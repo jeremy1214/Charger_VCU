@@ -9,18 +9,23 @@ BMS_IC_info_t bms_ic_info[NUM_IC];
 
 
 
-BMS_t bms_t;
+BMS_t BMS_dev;
 
 void BMS_Init()
 {
     // Placeholder for BMS initialization logic
-    bms_t.bms_states = BMS_NORMAL;
-    bms_t.charging_states = CHARGING_INIT;
-    bms_t.total_voltage_mV = 0;
-    bms_t.over_voltage = false;
-    bms_t.under_voltage = false;
-    bms_t.over_temperature = false;
-    bms_t.signal_lost = false;
+    BMS_dev.state = BMS_NORMAL;
+    BMS_dev.charging_state = CHARGING_INIT;
+    BMS_dev.total_voltage_mV = 0;
+    BMS_dev.over_voltage = false;
+    BMS_dev.under_voltage = false;
+    BMS_dev.over_temperature = false;
+    BMS_dev.signal_lost = false;
+    BMS_dev.cell_voltage_mV_highest = 0;
+    BMS_dev.cell_voltage_mV_lowest = 0;
+    BMS_dev.temp_deg_c_avg = 0.0;
+    BMS_dev.temp_deg_c_highest = 0.0;
+    BMS_dev.temp_deg_c_lowest = 0.0;
     for(int i=0; i<NUM_IC; i++){
         bms_ic_info[i].CAN_signal_lost_count = 0;
     }
@@ -29,9 +34,9 @@ void BMS_Init()
 BMS_STATES BMS_Check_Fault()
 {
     // Placeholder for fault checking logic
-    if(bms_t.over_voltage || bms_t.under_voltage || bms_t.over_temperature){
+    if(BMS_dev.over_voltage || BMS_dev.under_voltage || BMS_dev.over_temperature){
         return BMS_SENSOR_FAULT;
-    }else if(bms_t.signal_lost){
+    }else if(BMS_dev.signal_lost){
         return BMS_FAULT;
     }else{
         return BMS_NORMAL;
@@ -39,21 +44,28 @@ BMS_STATES BMS_Check_Fault()
 }
 
 void BMS_Update_Volt(){
-    bms_t.total_voltage_mV = 0;
+    BMS_dev.total_voltage_mV = 0;
+    uint16_t max_volt = 0;
+    uint16_t min_volt = UINT16_MAX;
     for(uint8_t ic = 0; ic < NUM_IC; ic++){
         for(uint8_t cell = 0; cell < ACTIVE_CELLS_PER_IC; cell++){
-            bms_t.total_voltage_mV += bms_ic_info[ic].volt_info.voltages[cell];
+            uint16_t volt = bms_ic_info[ic].volt_info.voltages[cell];
+            BMS_dev.total_voltage_mV += volt;
+            if(volt > max_volt) max_volt = volt;
+            if(volt < min_volt) min_volt = volt;
         }
-        if(bms_ic_info[ic].status_info.max_voltage>CELL_OK_MAX_CODE){
-            bms_t.over_voltage = true;
+        if(bms_ic_info[ic].status_info.max_voltage > CELL_OK_MAX_CODE){
+            BMS_dev.over_voltage = true;
         }
-        if(bms_ic_info[ic].status_info.min_voltage<CELL_OK_MIN_CODE){
-            bms_t.under_voltage = true;
+        if(bms_ic_info[ic].status_info.min_voltage < CELL_OK_MIN_CODE){
+            BMS_dev.under_voltage = true;
         }
     }
+    BMS_dev.cell_voltage_mV_highest = max_volt;
+    BMS_dev.cell_voltage_mV_lowest = min_volt;
 }
 
-void BMS_Update_State(){
+void BMS_state_update(){
     for(uint8_t ic = 0; ic < NUM_IC; ic++){
         if(bms_ic_info[ic].CAN_signal_lost_count < INT32_MAX){
             bms_ic_info[ic].CAN_signal_lost_count++;  
@@ -79,26 +91,18 @@ void BMS_Update_State(){
         }
 
         if(bms_ic_info[ic].status_info.fault_state == NORMAL){
-            bms_t.signal_lost = bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD;
+            BMS_dev.signal_lost = bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD;
         }
     }
 
-    bms_t.bms_states = BMS_Check_Fault();
-    for(uint8_t ic = 0; ic < NUM_IC; ic++){
-        
-    }
-
-    if(bms_t.bms_states == NORMAL){
-        bool signal_lost = 0 > BMS_SIGNAL_THRESHOLD;
-        bms_t.signal_lost = signal_lost;
-    }
+    BMS_dev.state = BMS_Check_Fault();
 }
 
 void Get_BMS_IC_Info(uint8_t ic){
     bms_ic_info[ic].CAN_signal_lost_count = 0;
 }
 
-void BMS_Get_CAN_Message(const twai_message_t *message)
+void BMS_CAN_handler(const twai_message_t *message)
 {
     // Placeholder for CAN message retrieval logic
     uint16_t id = static_cast<uint16_t>(message->identifier);
@@ -149,7 +153,26 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
     }
 }
 
-void BMS_Update_Data(){
+void BMS_update_data(){
     BMS_Update_Volt();
-    BMS_Update_State();
+    // Calculate temperature averages
+    float total_temp = 0.0;
+    float max_temp = -1000.0;
+    float min_temp = 1000.0;
+    int temp_count = 0;
+    for(uint8_t ic = 0; ic < NUM_IC; ic++){
+        for(uint8_t ntc = 0; ntc < NTC_PER_IC; ntc++){
+            float temp_c = bms_ic_info[ic].temp_info.temperatures[ntc] / 10.0; // Convert deci-C to C
+            total_temp += temp_c;
+            if(temp_c > max_temp) max_temp = temp_c;
+            if(temp_c < min_temp) min_temp = temp_c;
+            temp_count++;
+        }
+    }
+    if(temp_count > 0){
+        BMS_dev.temp_deg_c_avg = total_temp / temp_count;
+        BMS_dev.temp_deg_c_highest = max_temp;
+        BMS_dev.temp_deg_c_lowest = min_temp;
+    }
+    BMS_state_update();
 }

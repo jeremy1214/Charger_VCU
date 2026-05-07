@@ -6,8 +6,8 @@
 
 // GPIO pin definitions
 #include <cstdint>
-#define CAN_TX_PIN GPIO_NUM_2
-#define CAN_RX_PIN GPIO_NUM_15
+#define CAN_TX_PIN GPIO_NUM_6
+#define CAN_RX_PIN GPIO_NUM_7
 // #define SDC_PIN GPIO_NUM_17
 #define FAULT_LED_PIN GPIO_NUM_8
 #define START_BUTTON_PIN GPIO_NUM_18

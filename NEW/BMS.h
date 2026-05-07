@@ -76,14 +76,19 @@ typedef enum{
 }CHARGING_STATES;
 
 typedef struct{
-    BMS_STATES bms_states;
-    CHARGING_STATES charging_states;
+    BMS_STATES state;
+    CHARGING_STATES charging_state;
     uint32_t total_voltage_mV;
     bool over_voltage;
     bool under_voltage;
     bool over_temperature;
     bool signal_lost;
     bool bms_fault;
+    uint16_t cell_voltage_mV_highest;
+    uint16_t cell_voltage_mV_lowest;
+    float temp_deg_c_avg;
+    float temp_deg_c_highest;
+    float temp_deg_c_lowest;
 }BMS_t;
 
 #endif
@@ -91,7 +96,7 @@ typedef struct{
 void BMS_Init();
 BMS_STATES BMS_Check_Fault();
 void BMS_Update_Volt();
-void BMS_Update_State();
-void BMS_Get_CAN_Message(const twai_message_t *message);
+void BMS_state_update();
+void BMS_CAN_handler(const twai_message_t *message);
+void BMS_update_data();
 void Get_BMS_IC_Info(uint8_t ic);
-void BMS_Update_Data();
