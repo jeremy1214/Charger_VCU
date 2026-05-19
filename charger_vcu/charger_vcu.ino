@@ -19,13 +19,14 @@ Adafruit_NeoPixel pixels(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 #define CAN_TX_PIN GPIO_NUM_2
 #define CAN_RX_PIN GPIO_NUM_15
-// #define FAULT_LED_PIN GPIO_NUM_8
+#define FAULT_LED_PIN GPIO_NUM_8
 #define START_BUTTON_PIN GPIO_NUM_18
 #define CHARGING_LED_PIN GPIO_NUM_5
 #define BATTERY_HEALTH_PIN GPIO_NUM_10
 #define BMS_FAULT_PIN GPIO_NUM_21
 #define PRECHARGE_PIN GPIO_NUM_6
 #define COOLING_SYSTEM_PIN GPIO_NUM_11
+#define HFL_PIN GPIO_NUM_4
 
 // Define HV Battery Parameters
 #define HV_BATT_CHRG_I_LIM_AMPS_HIGH 1.2 // current limit in amps
@@ -65,12 +66,15 @@ static int unsuccessfully_charged_mV = 2000;
 constexpr gpio_num_t kCanTxPin = CAN_TX_PIN; // CAN Transmit (TWAI_TX)
 constexpr gpio_num_t kCanRxPin = CAN_RX_PIN; // CAN Receive (TWAI_RX)
 // constexpr gpio_num_t kSDCPin         = SDC_PIN;   // SDC input (active-high)
-// constexpr gpio_num_t kFaultLedPin = FAULT_LED_PIN;           // Fault LED (D5)
+constexpr gpio_num_t kFaultLedPin = FAULT_LED_PIN;           // Fault LED (D5)
 constexpr gpio_num_t kStartButtonPin = START_BUTTON_PIN;     // Start charging button
 constexpr gpio_num_t kChargingLedPin = CHARGING_LED_PIN;     // Charging indicator LED (D27)
 constexpr gpio_num_t kBatteryHealthPin = BATTERY_HEALTH_PIN; // Battery health indicator output
 constexpr gpio_num_t kBMSFaultPin = BMS_FAULT_PIN;           // signal to BMS
 constexpr gpio_num_t kPreChargePin = PRECHARGE_PIN;          // PRECHARGE LED (D26)
+constexpr gpio_num_t kHFLPin = HFL_PIN;
+
+static bool havePreCharge = false;
 
 // ----------------- Message Definitions -----------------
 typedef struct
@@ -148,6 +152,8 @@ const size_t kNumMessages = sizeof(messageConfigs) / sizeof(CANMessageConfig_t);
 extern BMS_t bms_t;
 extern BMS_IC_info_t bms_ic_info[NUM_IC];
 bool bms_normal;
+// Flag set when Serial receives the literal "start" (case-insensitive)
+static volatile bool serialStartRequested = false;
 
 // ----------------- Function Prototypes -----------------
 bool Init_CAN();
@@ -189,6 +195,9 @@ void setup()
     digitalWrite(kBMSFaultPin, HIGH); // Start with BMS normal
 
     pinMode(kPreChargePin, INPUT_PULLUP);
+
+    pinMode(kHFLPin, OUTPUT);
+    digitalWrite(kHFLPin, HIGH);
 
     if (!Init_CAN())
     {
@@ -266,10 +275,12 @@ void loop()
 
     pixels.clear(); // 清除顏色
 
-    // 設定顏色為紅色 (R, G, B) - 數值範圍 0-255
+    // // 設定顏色為紅色 (R, G, B) - 數值範圍 0-255
     pixels.setPixelColor(0, pixels.Color(150, 0, 0));
+    if(havePreCharge) pixels.setPixelColor(0, pixels.Color(0, 150, 0));
     pixels.show(); // 更新 LED 顯示
     delay(500);
+
     // This task will be starved by higher priority tasks or can be deleted in setup()
     vTaskDelay(portMAX_DELAY); // Effectively sleep forever
 }
@@ -429,6 +440,9 @@ typedef struct
     float onBdChrgrIDc;    // Input DC current (A)
     float onBdChrgrUAct;   // Output voltage (V)
     uint32_t lastUpdateMs; // Last time OBC data was updated
+    uint8_t lastRaw[8];    // Last raw CAN data bytes
+    uint8_t lastRawLen;    // Length of last raw data
+    uint32_t lastRawTsMs;  // Timestamp of last raw data
 } OBC_Monitor;
 
 OBC_Monitor obc = {
@@ -439,7 +453,10 @@ OBC_Monitor obc = {
     .onBdChrgrUDc = 0.0,
     .onBdChrgrIDc = 0.0,
     .onBdChrgrUAct = 0.0,
-    .lastUpdateMs = 0};
+    .lastUpdateMs = 0,
+    .lastRaw = {0},
+    .lastRawLen = 0,
+    .lastRawTsMs = 0};
 
 void Get_Bd_Chrgr(const uint8_t *data)
 {
@@ -494,18 +511,30 @@ void Process_OBC_Message(const twai_message_t *message)
 {
     const uint16_t id = static_cast<uint16_t>(message->identifier);
     const uint8_t *data = message->data;
-
+    // Store raw data and parse, but do NOT print here. printSystemStatus() will output the info.
     switch (id)
     {
     case 0x12A:
+        obc.lastRawLen = message->data_length_code;
+        memcpy(obc.lastRaw, data, obc.lastRawLen);
+        obc.lastRawTsMs = millis();
         Get_Bd_Chrgr(data);
         break;
+
     case 0x218:
+        obc.lastRawLen = message->data_length_code;
+        memcpy(obc.lastRaw, data, obc.lastRawLen);
+        obc.lastRawTsMs = millis();
         Get_Bd_State(data);
         break;
+
     case 0x216:
+        obc.lastRawLen = message->data_length_code;
+        memcpy(obc.lastRaw, data, obc.lastRawLen);
+        obc.lastRawTsMs = millis();
         Get_Current_State(data);
         break;
+
     default:
         break;
     }
@@ -569,6 +598,35 @@ void BMS_Monitor_Task(void *pvParameters)
 
     while (true)
     {
+        // --- Poll Serial for a single-line "start" command ---
+        while (Serial.available())
+        {
+            static String _serialBuf = "";
+            char c = static_cast<char>(Serial.read());
+            if (c == '\r' || c == '\n')
+            {
+                if (_serialBuf.length() > 0)
+                {
+                    String cmd = _serialBuf;
+                    cmd.toLowerCase();
+                    cmd.trim();
+                    if (cmd == "start")
+                    {
+                        serialStartRequested = true;
+                        Serial.println("Serial: 'start' received - ready to start when button pressed.");
+                    }
+                    _serialBuf = "";
+                }
+            }
+            else
+            {
+                _serialBuf += c;
+                // Prevent runaway buffer
+                if (_serialBuf.length() > 64)
+                    _serialBuf = _serialBuf.substring(_serialBuf.length() - 64);
+            }
+        }
+
         bms_normal = bms_t.bms_states == BMS_NORMAL;
 
         // LED lighting is bms normal
@@ -646,7 +704,7 @@ bool isBatteryHealthy()
     // Update the battery health indicator pin
     digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
 
-    return isHealthy; // Return the health status
+    return false; // Return the health status
 }
 
 void Update_Charging_State()
@@ -660,11 +718,8 @@ void Update_Charging_State()
     bool buttonPressed = (currentButtonState == LOW && lastButtonState == HIGH);
     lastButtonState = currentButtonState; // Update for next cycle
 
-    // Check battery health
-    bool batteryOk = isBatteryHealthy();
-
     // Check if BMS is normal and Precharge is valid
-    bool bmsReady = (bms_t.bms_states == BMS_NORMAL);
+    bool bmsReady = isBatteryHealthy();
     bool prechargeValid = digitalRead(kPreChargePin);
 
     // Prevent rapid state changes, but allow immediate transition *to* FAIL
@@ -698,13 +753,16 @@ void Update_Charging_State()
     case CHARGING_READY:
         // Transition to START if:
         // 1. BMS is normal AND Precharge is valid AND button pressed
-        if (bmsReady && prechargeValid && buttonPressed)
+        // Additionally require a prior Serial "start" command
+        if (bmsReady && prechargeValid && buttonPressed && serialStartRequested)
         {
             bms_t.charging_states = CHARGING_START;
             currentLimitHigh = true; // Reset to high current limit
             memcpy(messageConfigs[5].data, kChrgnILimHighData, 8);
             currentLimit = HV_BATT_CHRG_I_LIM_AMPS_HIGH;
-            Serial.println("STATE: -> START (Button Pressed, Conditions Met)");
+            Serial.println("STATE: -> START (Button Pressed & Serial 'start' received, Conditions Met)");
+            // consume the serial start request once used
+            serialStartRequested = false;
         }
         // Go to FAIL if BMS becomes abnormal while waiting
         else if (!bmsReady)
@@ -830,6 +888,13 @@ void printSystemStatus()
     // ... 原有的狀態打印 ...
     Serial.println("\n========== System Status ==========");
 
+    if(digitalRead(kPreChargePin) || havePreCharge == true){
+        Serial.println("precharge complete");
+        havePreCharge = true;
+    }else{
+        Serial.println("precharge not complete");
+    }
+
     // 1. 打印充電狀態 (Charging State)
     Serial.print("Charging State: ");
     switch (bms_t.charging_states)
@@ -874,35 +939,32 @@ void printSystemStatus()
     }
 
     // 4. 打印充電電流信息
-    if (bms_t.charging_states == CHARGING_START)
+    // Print OBC input voltage status with threshold check
+    if (obc.onBdChrgrUDc >= kInputVoltageThresholdV)
     {
-        // Print OBC input voltage status with threshold check
-        if (obc.onBdChrgrUDc >= kInputVoltageThresholdV)
+        if (obc.onBdChrgrUDc <= kOvervoltageThresholdV)
         {
-            if (obc.onBdChrgrUDc <= kOvervoltageThresholdV)
-            {
-                Serial.printf(" OBC Input: %.1fV (OK)\n", obc.onBdChrgrUDc);
-            }
-            else
-            {
-                Serial.printf(" OBC Input: %.1fV (OVERVOLTAGE!)\n", obc.onBdChrgrUDc);
-            }
+            Serial.printf(" OBC Input: %.1fV (OK)\n", obc.onBdChrgrUDc);
         }
         else
         {
-            Serial.printf(" OBC Input: %.1fV (WAITING FOR >= %.1fV)\n", obc.onBdChrgrUDc, (float)kInputVoltageThresholdV);
+            Serial.printf(" OBC Input: %.1fV (OVERVOLTAGE!)\n", obc.onBdChrgrUDc);
         }
-        Serial.printf(" OBC Current: %.1fA %s\n",
-                      obc.onBdChrgrIDc,
-                      (obc.onBdChrgrIDc <= HV_BATT_CHRG_I_LIM_AMPS_HIGH) ? "(OK)" : "(OVERCURRENT!)");
-        if (currentLimitHigh)
-        {
-            Serial.println("Current Mode: HIGH (1.2A) - Before 80%% voltage");
-        }
-        else
-        {
-            Serial.println("Current Mode: LOW (1.0A) - After 80%% voltage");
-        }
+    }
+    else
+    {
+        Serial.printf(" OBC Input: %.1fV (WAITING FOR >= %.1fV)\n", obc.onBdChrgrUDc, (float)kInputVoltageThresholdV);
+    }
+    Serial.printf(" OBC Current: %.1fA %s\n",
+                    obc.onBdChrgrIDc,
+                    (obc.onBdChrgrIDc <= HV_BATT_CHRG_I_LIM_AMPS_HIGH) ? "(OK)" : "(OVERCURRENT!)");
+    if (currentLimitHigh)
+    {
+        Serial.println("Current Mode: HIGH (1.2A) - Before 80%% voltage");
+    }
+    else
+    {
+        Serial.println("Current Mode: LOW (1.0A) - After 80%% voltage");
     }
 
     // 5. 打印系統條件
@@ -910,6 +972,7 @@ void printSystemStatus()
     Serial.printf("  BMS Status: %s\n", (bms_t.bms_states == BMS_NORMAL) ? "NORMAL" : "ERROR");
     Serial.printf("  Precharge: %s\n", digitalRead(kPreChargePin) ? "VALID" : "INVALID");
     Serial.printf("  Button Pressed: %s\n", digitalRead(kStartButtonPin) ? "NO" : "YES");
+    Serial.printf("  Serial 'start' received: %s\n", serialStartRequested ? "YES" : "NO");
 
     // 6. 打印故障標記 (如果有錯誤發生)
     if (bms_t.over_voltage)
@@ -918,6 +981,20 @@ void printSystemStatus()
         Serial.println("[!] WARN: Under Voltage Detected");
     if (bms_t.over_temperature)
         Serial.println("[!] WARN: Over Temperature Detected");
+
+    // 7. Print last received raw OBC CAN message (only here)
+    if (obc.lastRawLen > 0)
+    {
+        Serial.printf("Last OBC CAN msg @ %lu ms (len %d): ", obc.lastRawTsMs, obc.lastRawLen);
+        for (int i = 0; i < obc.lastRawLen; i++)
+        {
+            Serial.printf("%02X ", obc.lastRaw[i]);
+        }
+        Serial.println();
+        // Also reprint parsed values
+        Serial.printf("  Parsed (from last): InputUDC=%.1fV, InputIDC=%.1fA, OutputUAct=%.2fV, OBCState=%d\n",
+                      obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrSt);
+    }
 
     Serial.println("====================================");
 
