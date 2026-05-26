@@ -52,6 +52,8 @@ constexpr uint32_t kOvercurrentTimeoutMs = 500;   // Time to wait before declari
 constexpr uint32_t kTestLedIntervalMs = 250;        // TEST state flash interval (ms)
 constexpr uint32_t kReadyLedIntervalMs = 1000;      // READY state flash interval (ms)
 constexpr uint32_t kStateChangeMinIntervalMs = 500; // Minimum time between state changes (reduced)
+// Grace period for transient precharge loss before declaring FAIL
+constexpr uint32_t kPrechargeWarningTimeoutMs = 1000; // ms
 
 // LED state variables
 static uint32_t lastLedUpdateMs = 0;
@@ -74,7 +76,7 @@ constexpr gpio_num_t kBMSFaultPin = BMS_FAULT_PIN;           // signal to BMS
 constexpr gpio_num_t kPreChargePin = PRECHARGE_PIN;          // PRECHARGE LED (D26)
 constexpr gpio_num_t kHFLPin = HFL_PIN;
 
-static bool havePreCharge = true;
+static bool havePreCharge = false;
 
 // ----------------- Message Definitions -----------------
 typedef struct
@@ -180,7 +182,6 @@ void setup()
 
     Serial.println("\n--- ESP32 CAN BMS Charger Controller ---");
 
-    // pinMode(kSDCPin, INPUT_PULLUP);
     pinMode(kFaultLedPin, OUTPUT);
     digitalWrite(kFaultLedPin, LOW); // Start with LED off
 
@@ -276,9 +277,8 @@ void loop()
 
     pixels.clear(); // 清除顏色
 
-    // // 設定顏色為紅色 (R, G, B) - 數值範圍 0-255
-    pixels.setPixelColor(0, pixels.Color(150, 0, 0));
-    if(havePreCharge) pixels.setPixelColor(0, pixels.Color(0, 150, 0));
+    // // 設定顏色為綠色 (R, G, B) - 數值範圍 0-255
+    pixels.setPixelColor(0, pixels.Color(0, 150, 0));
     pixels.show(); // 更新 LED 顯示
     delay(500);
 
@@ -602,6 +602,7 @@ void BMS_Monitor_Task(void *pvParameters)
         {
             static String _serialBuf = "";
             char c = static_cast<char>(Serial.read());
+
             if (c == '\r' || c == '\n')
             {
                 if (_serialBuf.length() > 0)
@@ -613,6 +614,12 @@ void BMS_Monitor_Task(void *pvParameters)
                     {
                         serialStartRequested = true;
                         Serial.println("Serial: 'start' received - ready to start when button pressed.");
+                    }
+                    else if (cmd == "e" || cmd == "stop" || cmd == "exit")
+                    {
+                        serialStartRequested = false;
+                        bms_t.charging_states = CHARGING_FAIL;
+                        Serial.println("Serial: stop command received - stopping charging.");
                     }
                     _serialBuf = "";
                 }
@@ -637,6 +644,10 @@ void BMS_Monitor_Task(void *pvParameters)
 
         updateChargingLed();
 
+        Update_Charging_State();
+        
+        Control_HFL();
+
         static uint32_t last_print_time_Ms = 0;
         uint32_t now_Ms = millis();
         if (now_Ms - last_print_time_Ms > 1000)
@@ -650,9 +661,6 @@ void BMS_Monitor_Task(void *pvParameters)
 void Check_BMS_Status()
 {
     BMS_Update_Data();
-    Update_Charging_State();
-    Control_HFL();
-
 }
 
 void Control_HFL()
@@ -714,7 +722,7 @@ bool isBatteryHealthy()
     // Update the battery health indicator pin
     digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
 
-    return true; // Return the health status
+    return isHealthy; // Return the health status
 }
 
 void Update_Charging_State()
@@ -728,12 +736,9 @@ void Update_Charging_State()
     bool buttonPressed = (currentButtonState == HIGH && lastButtonState == LOW);
     lastButtonState = currentButtonState; // Update for next cycle
 
-    if(buttonPressed) Serial.println("buttonPressed");
-    else Serial.println("not buttonPressed");
-
-    // Check if BMS is normal and Precharge is valid
+    // Check if BMS is normal and Precharge is valid (read live signal)
     bool bmsReady = isBatteryHealthy();
-    bool prechargeValid = havePreCharge;
+    bool prechargeValid = digitalRead(kPreChargePin);
 
     // Prevent rapid state changes, but allow immediate transition *to* FAIL
     CHARGING_STATES currentState = bms_t.charging_states; // Read current state once
@@ -794,12 +799,27 @@ void Update_Charging_State()
             break;
         }
 
-        // Check Precharge state
+        // Check Precharge state — treat transient loss as a warning first
+        static uint32_t prechargeLostStartMs = 0;
         if (!prechargeValid)
         {
-            bms_t.charging_states = CHARGING_FAIL;
-            Serial.println("STATE: -> FAIL (Precharge disconnected during CHARGING)");
-            break;
+            if (prechargeLostStartMs == 0)
+            {
+                prechargeLostStartMs = nowMs; // start grace timer
+                Serial.println("WARN: Precharge lost (transient) — monitoring before fail.");
+            }
+            else if (nowMs - prechargeLostStartMs > kPrechargeWarningTimeoutMs)
+            {
+                bms_t.charging_states = CHARGING_FAIL;
+                Serial.println("STATE: -> FAIL (Precharge disconnected during CHARGING)");
+                prechargeLostStartMs = 0;
+                break;
+            }
+            // else: still within grace period, do not fail yet
+        }
+        else
+        {
+            prechargeLostStartMs = 0; // reset timer when precharge returns
         }
 
         // Check for overvoltage condition
