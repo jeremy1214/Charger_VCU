@@ -172,6 +172,7 @@ bool isBatteryHealthy();
 void printSystemStatus(); // Combined print functions
 void Get_Bd_Chrgr(const uint8_t *data);
 void Control_HFL();
+void Get_Precharge();
 
 void setup()
 {
@@ -473,7 +474,6 @@ void Get_Bd_Chrgr(const uint8_t *data)
     uint16_t raw_uact = 0;
     raw_uact = ((uint16_t)data[7]) | (((uint16_t)(data[6] & 0x07)) << 8);
     obc.onBdChrgrUAct = raw_uact * 0.25;
-
 }
 
 void Get_Bd_State(const uint8_t *data)
@@ -508,7 +508,7 @@ void Process_OBC_Message(const twai_message_t *message)
     switch (id)
     {
     case 0x084: // wake-up obc message
-         // Store raw data for Output Control message (for debugging)
+                // Store raw data for Output Control message (for debugging)
         obc.lastRawLen = message->data_length_code;
         memcpy(obc.lastRaw, data, obc.lastRawLen);
         obc.lastUpdateMs = millis();
@@ -643,8 +643,10 @@ void BMS_Monitor_Task(void *pvParameters)
         updateChargingLed();
 
         Update_Charging_State();
-        
+
         Control_HFL();
+
+        Get_Precharge();
 
         static uint32_t last_print_time_Ms = 0;
         uint32_t now_Ms = millis();
@@ -654,6 +656,11 @@ void BMS_Monitor_Task(void *pvParameters)
             last_print_time_Ms = now_Ms;
         }
     }
+}
+
+void Get_Precharge()
+{
+    havePreCharge = digitalRead(kPreChargePin) == LOW || havePreCharge; // Assuming active LOW for precharge signal
 }
 
 void Check_BMS_Status()
@@ -910,125 +917,69 @@ void Update_Charging_State()
 
 void printSystemStatus()
 {
-    // ... 原有的狀態打印 ...
     Serial.println("\n========== System Status ==========");
 
-    if(digitalRead(kPreChargePin) || havePreCharge == true){
-        Serial.println("precharge complete");
-        havePreCharge = true;
-    }else{
-        Serial.println("precharge not complete");
-    }
-
-    // 1. 打印充電狀態 (Charging State)
+    // 1. Charging State
     Serial.print("Charging State: ");
     switch (bms_t.charging_states)
     {
     case CHARGING_INIT:
-        Serial.println("INITIALIZING - Waiting for BMS");
+        Serial.println("INITIALIZING");
         break;
     case CHARGING_READY:
-        Serial.println("READY - Press START button to charge");
-        break;
-    case CHARGING_TEST:
-        Serial.println("TEST (Legacy - Not used)");
+        Serial.println("READY");
         break;
     case CHARGING_START:
-        Serial.println("CHARGING...");
+        Serial.println("ACTIVE");
         break;
     case CHARGING_FAIL:
-        Serial.println("!!! FAULT / FAIL !!!");
+        Serial.println("FAILED");
         break;
     default:
         Serial.println("UNKNOWN");
         break;
     }
 
-    // 2. 打印電池總電壓 (如果您有計算總電壓)
-    // 根據您的 BMS_Update_Volt() 邏輯
-    Serial.printf("Total Battery Voltage: %.2f V\n", bms_t.total_voltage_mV / 1000.0);
-    Serial.printf("Battery Voltage Progress: %.1f %% \n", (bms_t.total_voltage_mV / (float)Max_mv) * 100.0);
+    // 2. Battery Voltage Status
+    Serial.printf("Battery Voltage: %.2f V (%.1f%%)\n", 
+                  bms_t.total_voltage_mV / 1000.0,
+                  (bms_t.total_voltage_mV / (float)Max_mv) * 100.0);
 
-    // 3. 打印個別 IC 的電壓詳情 (選用，若想看每一串的狀態)
-    Serial.println("Individual Cell Voltages (V):");
-    for (int i = 0; i < NUM_IC; i++)
-    {
-        Serial.printf("  IC %d: ", i);
-        for (int j = 0; j < ACTIVE_CELLS_PER_IC; j++)
-        {
-            // 將原始 Code 轉換為電壓 (V)
-            float cellV = bms_ic_info[i].volt_info.voltages[j] * CODE_TO_VOLT;
-            Serial.printf("%.3f ", cellV);
-        }
-        Serial.println();
-    }
-
-    // 4. 打印充電電流信息
-    // Print OBC input voltage status with threshold check
-    if (obc.onBdChrgrUDc >= kInputVoltageThresholdV)
-    {
-        if (obc.onBdChrgrUDc <= kOvervoltageThresholdV)
-        {
-            Serial.printf(" OBC Input: %.1fV (OK)\n", obc.onBdChrgrUDc);
-        }
-        else
-        {
-            Serial.printf(" OBC Input: %.1fV (OVERVOLTAGE!)\n", obc.onBdChrgrUDc);
-        }
-    }
-    else
-    {
-        Serial.printf(" OBC Input: %.1fV (WAITING FOR >= %.1fV)\n", obc.onBdChrgrUDc, (float)kInputVoltageThresholdV);
-    }
-    Serial.printf(" OBC Current: %.1fA %s\n",
-                    obc.onBdChrgrIDc,
-                    (obc.onBdChrgrIDc <= HV_BATT_CHRG_I_LIM_AMPS_HIGH) ? "(OK)" : "(OVERCURRENT!)");
-    if (currentLimitHigh)
-    {
-        Serial.println("Current Mode: HIGH (1.2A) - Before 80%% voltage");
-    }
-    else
-    {
-        Serial.println("Current Mode: LOW (1.0A) - After 80%% voltage");
-    }
-
-    // 5. 打印系統條件
-    Serial.println("System Conditions:");
-    Serial.printf("  BMS Status: %s\n", (bms_t.bms_states == BMS_NORMAL) ? "NORMAL" : "ERROR");
-    Serial.printf("  Precharge: %s\n", digitalRead(kPreChargePin) ? "VALID" : "INVALID");
-    Serial.printf("  Button Pressed: %s\n", digitalRead(kStartButtonPin) ? "YES" : "NO");
-    Serial.printf("  Serial 'start' received: %s\n", serialStartRequested ? "YES" : "NO");
-
-    // 6. 打印故障標記 (如果有錯誤發生)
-    if (bms_t.over_voltage)
-        Serial.println("[!] WARN: Over Voltage Detected");
-    if (bms_t.under_voltage)
-        Serial.println("[!] WARN: Under Voltage Detected");
-    if (bms_t.over_temperature)
-        Serial.println("[!] WARN: Over Temperature Detected");
-
-    // 7. Print last received raw OBC CAN message (only here)
+    // 3. OBC Status (merged from multiple print locations)
     if (obc.lastRawLen > 0)
     {
-        Serial.printf("Last OBC CAN msg @ %lu ms (len %d): ", obc.lastUpdateMs, obc.lastRawLen);
-        for (int i = 0; i < obc.lastRawLen; i++)
-        {
-            Serial.printf("%02X ", obc.lastRaw[i]);
-        }
-        Serial.println();
-        // Also reprint parsed values
-        Serial.printf("  Parsed (from last): OutputUDC=%.1fV, OutputIDC=%.1fA, InputUAct=%.2fV, InputIAct=%.2fA, OBCState=%d\n",
-                      obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct, obc.onBdChrgrSt);
+        // Consolidated OBC information
+        Serial.printf("OBC Input: %.1fV, Output: %.1fV, Current: %.1fA\n",
+                      obc.onBdChrgrUDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct);
+        Serial.printf("OBC State: %d, Limit Mode: %s\n",
+                      obc.onBdChrgrSt,
+                      currentLimitHigh ? "HIGH (1.2A)" : "LOW (1.0A)");
     }
 
-    Serial.println("====================================");
+    // 4. System Conditions
+    Serial.println("System Conditions:");
+    Serial.printf("  BMS Status: %s\n", (bms_t.bms_states == BMS_NORMAL) ? "NORMAL" : "ERROR");
+    Serial.printf("  Precharge: %s\n", (digitalRead(kPreChargePin) || havePreCharge) ? "COMPLETE" : "INCOMPLETE");
+    Serial.printf("  Button: %s | Serial 'start': %s\n",
+                  digitalRead(kStartButtonPin) ? "PRESSED" : "NOT",
+                  serialStartRequested ? "YES" : "NO");
 
-    // 輸出詳細的電池單元電壓數據
-    BMS_Print_Cell_Voltages();
-
-    // 加入詳細診斷輸出
-    if (bms_t.bms_states != BMS_NORMAL)
+    // 5. Fault Warnings (only show if present)
+    if (bms_t.over_voltage || bms_t.under_voltage || bms_t.over_temperature)
     {
-        BMS_Print_Diagnostics();
+        Serial.print("  WARNINGS: ");
+        if (bms_t.over_voltage) Serial.print("OverV ");
+        if (bms_t.under_voltage) Serial.print("UnderV ");
+        if (bms_t.over_temperature) Serial.print("OverT ");
+        Serial.println();
     }
+
+    Serial.println("====================================\n");
+
+    // 6. Detailed diagnostics (only if needed for troubleshooting)
+    // Uncomment these lines for verbose debugging:
+    // BMS_Print_Cell_Voltages();
+    // if (bms_t.bms_states != BMS_NORMAL) {
+    //     BMS_Print_Diagnostics();
+    // }
 }

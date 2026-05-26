@@ -6,14 +6,15 @@
 using namespace std;
 
 BMS_IC_info_t bms_ic_info[NUM_IC];
-
-
-
 BMS_t bms_t;
 
+/**
+ * @brief Initialize BMS system and all IC structures
+ * Reset all counters, flags, and states to default values
+ */
 void BMS_Init()
 {
-    // Placeholder for BMS initialization logic
+    // Initialize BMS overall state
     bms_t.bms_states = BMS_NORMAL;
     bms_t.charging_states = CHARGING_INIT;
     bms_t.total_voltage_mV = 0;
@@ -21,21 +22,49 @@ void BMS_Init()
     bms_t.under_voltage = false;
     bms_t.over_temperature = false;
     bms_t.signal_lost = false;
-    for(int i=0; i<NUM_IC; i++){
-        bms_ic_info[i].CAN_signal_lost_count = 0;
+    bms_t.bms_fault = false;
+    
+    // Initialize each IC's data and counters
+    for(uint8_t ic = 0; ic < NUM_IC; ic++){
+        bms_ic_info[ic].CAN_signal_lost_count = 0;
+        
+        // Initialize voltage data
+        for(uint8_t cell = 0; cell < ACTIVE_CELLS_PER_IC; cell++){
+            bms_ic_info[ic].volt_info.voltages[cell] = 0;
+        }
+        
+        // Initialize temperature data
+        for(uint8_t ntc = 0; ntc < NTC_PER_IC; ntc++){
+            bms_ic_info[ic].temp_info.temperatures[ntc] = 0;
+        }
+        
+        // Initialize status data
+        bms_ic_info[ic].status_info.fault_bits = 0;
+        bms_ic_info[ic].status_info.fault_state = NORMAL;
+        bms_ic_info[ic].status_info.balance_mask = 0;
+        bms_ic_info[ic].status_info.min_voltage = 0;
+        bms_ic_info[ic].status_info.max_voltage = 0;
     }
 }
 
+/**
+ * @brief Check BMS fault conditions based on voltage, temperature, and signal status
+ * @return BMS_STATES Current BMS state (NORMAL, SENSOR_FAULT, or FAULT)
+ */
 BMS_STATES BMS_Check_Fault()
 {
-    // Placeholder for fault checking logic
+    // Priority 1: Sensor faults (voltage/temperature issues)
     if(bms_t.over_voltage || bms_t.under_voltage || bms_t.over_temperature){
         return BMS_SENSOR_FAULT;
-    }else if(bms_t.signal_lost){
-        return BMS_FAULT;
-    }else{
-        return BMS_NORMAL;
     }
+    
+    // Priority 2: Communication faults (signal lost)
+    if(bms_t.signal_lost){
+        return BMS_FAULT;
+    }
+    
+    // No faults detected
+    return BMS_NORMAL;
 }
 
 void BMS_Update_Volt(){
@@ -44,16 +73,27 @@ void BMS_Update_Volt(){
     bms_t.under_voltage = false;
     
     for(uint8_t ic = 0; ic < NUM_IC; ic++){
+        // Skip offline ICs when calculating voltage statistics
+        if(bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD){
+            continue;
+        }
+        
+        // Sum up all cell voltages for this IC
         for(uint8_t cell = 0; cell < ACTIVE_CELLS_PER_IC; cell++){
-            // Convert code to voltage: code * CODE_TO_VOLT = voltage in V
-            // Then multiply by 1000 to get millivolts
+            // Safely convert raw code to voltage in millivolts
+            // code * CODE_TO_VOLT = voltage in V, then * 1000 = mV
             uint32_t cell_voltage_mv = (uint32_t)(bms_ic_info[ic].volt_info.voltages[cell] * CODE_TO_VOLT * 1000);
             bms_t.total_voltage_mV += cell_voltage_mv;
         }
-        if(bms_ic_info[ic].status_info.max_voltage > CELL_OK_MAX_CODE){
+        
+        // Check if min or max voltage for this IC is out of range
+        uint32_t max_voltage_mv = (uint32_t)(CELL_OK_MAX_CODE * CODE_TO_VOLT * 1000);
+        uint32_t min_voltage_mv = (uint32_t)(CELL_OK_MIN_CODE * CODE_TO_VOLT * 1000);
+        
+        if(bms_ic_info[ic].status_info.max_voltage > max_voltage_mv){
             bms_t.over_voltage = true;
         }
-        if(bms_ic_info[ic].status_info.min_voltage < CELL_OK_MIN_CODE){
+        if(bms_ic_info[ic].status_info.min_voltage < min_voltage_mv){
             bms_t.under_voltage = true;
         }
     }
@@ -64,37 +104,43 @@ void BMS_Update_State(){
     bms_t.over_temperature = false;  // Reset temperature flag
     
     for(uint8_t ic = 0; ic < NUM_IC; ic++){
-        // Increment signal lost counter if no message received
+        // Increment signal lost counter ONLY if this IC has not received messages
+        // The counter is reset to 0 when a message is received (via BMS_Reset_Signal_Lost_Count)
         if(bms_ic_info[ic].CAN_signal_lost_count < UINT32_MAX){
             bms_ic_info[ic].CAN_signal_lost_count++;  
         }
         
-        // Check if signal is lost for this IC
-        if(bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD){
-            bms_t.signal_lost = true;
+        // Check if signal is lost for this IC based on counter threshold
+        bool ic_signal_lost = (bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD);
+        
+        // Decode fault bits to check for additional fault conditions
+        uint8_t fault_bits = bms_ic_info[ic].status_info.fault_bits;
+        
+        // Determine fault state for this IC
+        FAULT_STATES ic_fault_state = NORMAL;
+        if(fault_bits & 0x01){  // Signal lost bit
+            ic_fault_state = SIGNAL_LOST;
+        }
+        else if(fault_bits & 0x02){  // Sensor fault bit
+            ic_fault_state = SENSOR_FAULT;
+        }
+        else if(fault_bits & 0x04){  // Over temperature bit
+            ic_fault_state = OVER_TEMPERATURE;
+            bms_t.over_temperature = true;
+        }
+        else if(fault_bits & 0x08){  // Voltage out of range bit
+            ic_fault_state = VOLTAGE_OUT_OF_RANGE;
+        }
+        else if(ic_signal_lost){  // No signal from counter check
+            ic_fault_state = SIGNAL_LOST;
         }
         
-        // Decode fault bits
-        uint8_t fault_bits = bms_ic_info[ic].status_info.fault_bits;
-        switch (fault_bits)
-        {
-        case 0x01:
-            bms_ic_info[ic].status_info.fault_state = SIGNAL_LOST;
+        // Update IC fault state
+        bms_ic_info[ic].status_info.fault_state = ic_fault_state;
+        
+        // Update overall BMS signal_lost flag if any IC has lost signal
+        if(ic_fault_state == SIGNAL_LOST || ic_signal_lost){
             bms_t.signal_lost = true;
-            break;
-        case 0x02:
-            bms_ic_info[ic].status_info.fault_state = SENSOR_FAULT;
-            break;
-        case 0x04:
-            bms_ic_info[ic].status_info.fault_state = OVER_TEMPERATURE;
-            bms_t.over_temperature = true;
-            break;
-        case 0x08:
-            bms_ic_info[ic].status_info.fault_state = VOLTAGE_OUT_OF_RANGE;
-            break;
-        default:
-            bms_ic_info[ic].status_info.fault_state = NORMAL;
-            break;
         }
     }
 
@@ -102,27 +148,45 @@ void BMS_Update_State(){
     bms_t.bms_states = BMS_Check_Fault();
 }
 
-void Get_BMS_IC_Info(uint8_t ic){
-    bms_ic_info[ic].CAN_signal_lost_count = 0;
+/**
+ * @brief Reset CAN signal lost counter when a valid message is received
+ * @param ic IC index to reset the counter for
+ */
+void BMS_Reset_Signal_Lost_Count(uint8_t ic)
+{
+    if(ic < NUM_IC){
+        bms_ic_info[ic].CAN_signal_lost_count = 0;
+    }
 }
 
 void BMS_Get_CAN_Message(const twai_message_t *message)
 {
-    // Placeholder for CAN message retrieval logic
+    // Validate input pointer
+    if(message == nullptr) return;
+    
     uint16_t id = static_cast<uint16_t>(message->identifier);
 
+    // Only process messages in valid CAN ID range
     if (id < 0x100 || id > 0x2FF) return;
 
-    const uint8_t *data = message->data; // 在前面加上 const
+    const uint8_t *data = message->data;
 
     if ((id & 0xF00) == CAN_ID_CELL_BASE)
     {
         // Process cell voltage message for IC ic
-        // Convert data to voltages using CODE_TO_VOLT
+        // CAN ID format: 0x1XY where X = IC number, Y = frame number
         uint8_t ic = static_cast<uint8_t>((id >> 4) & 0x0F);
-        Get_BMS_IC_Info(ic);
+        
+        // Validate IC index
+        if(ic >= NUM_IC) return;
+        
+        // Reset signal lost counter since we received a message from this IC
+        BMS_Reset_Signal_Lost_Count(ic);
+        
         uint8_t frame = static_cast<uint8_t>(id & 0x00F); // Extract frame number from ID
         uint8_t cell_index = frame * 4;                   // Each frame contains 4 cells
+        
+        // Process up to 4 cell voltages from this frame
         for (uint8_t i = cell_index; i < cell_index + 4 && i < ACTIVE_CELLS_PER_IC; i++)
         {
             uint16_t byte_offset = (i - cell_index) * 2;
@@ -132,10 +196,17 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
     }
     else if ((id & 0xFF0) == CAN_ID_TEMP_BASE)
     {
-        // Process temperature message for IC ic
-        // Convert data to temperatures using CODE_TO_TEMP_DECI_C
+        // Process temperature message for IC
+        // CAN ID format: 0x2XY where X = reserved, Y = IC number
         uint8_t ic = static_cast<uint8_t>(id & 0x00F); // Extract IC number from ID
-        Get_BMS_IC_Info(ic);
+        
+        // Validate IC index
+        if(ic >= NUM_IC) return;
+        
+        // Reset signal lost counter since we received a message from this IC
+        BMS_Reset_Signal_Lost_Count(ic);
+        
+        // Process temperature data for each NTC sensor
         for (uint8_t i = 0; i < NTC_PER_IC; i++)
         {
             uint16_t code = (data[i * 2 + 1] << 8) | data[i * 2];
@@ -145,88 +216,150 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
     }
     else if ((id & 0xFF0) == CAN_ID_STATUS_BASE)
     {
-        // Process status message for IC ic
-        // Extract status information from data bytes
+        // Process status message for IC
+        // CAN ID format: 0x24Y where Y = IC number
         uint8_t ic = static_cast<uint8_t>(id & 0x00F);
-        Get_BMS_IC_Info(ic);                         // Extract IC number from ID
-        bms_ic_info[ic].status_info.fault_bits = data[0]; // get whether cell discharge or not
+        
+        // Validate IC index
+        if(ic >= NUM_IC) return;
+        
+        // Reset signal lost counter since we received a message from this IC
+        BMS_Reset_Signal_Lost_Count(ic);
+        
+        // Extract status information from data bytes
+        bms_ic_info[ic].status_info.fault_bits = data[0];
         bms_ic_info[ic].status_info.balance_mask = (data[3] << 16) | (data[2] << 8) | data[1];
+        
+        // Extract and convert min/max voltages
         uint16_t min_code = (data[5] << 8) | data[4];
-        bms_ic_info[ic].status_info.min_voltage = min_code;
+        bms_ic_info[ic].status_info.min_voltage = static_cast<uint32_t>(min_code) * CODE_TO_VOLT * 1000; // Store as mV
+        
         uint16_t max_code = (data[7] << 8) | data[6];
-        bms_ic_info[ic].status_info.max_voltage = max_code;
+        bms_ic_info[ic].status_info.max_voltage = static_cast<uint32_t>(max_code) * CODE_TO_VOLT * 1000; // Store as mV
     }
 }
 
+/**
+ * @brief Update all BMS data including voltage and system state
+ * Call this periodically (e.g., in main loop) to update BMS status
+ */
 void BMS_Update_Data(){
-    BMS_Update_Volt();
-    BMS_Update_State();
+    BMS_Update_Volt();      // Update voltage measurements and check voltage ranges
+    BMS_Update_State();     // Update fault states and system status
 }
 
 void BMS_Print_Diagnostics() {
-    Serial.println("--- BMS Diagnostic Report ---");
+    Serial.println("\n=== BMS Diagnostic Report ===");
     
+    // Print overall BMS fault status
+    Serial.println("[Overall Status]");
     if (bms_t.over_voltage) {
-        Serial.println("[!] ERROR: Over Voltage Detected!");
+        Serial.println("  [!] ERROR: Over Voltage Detected!");
     }
     if (bms_t.under_voltage) {
-        Serial.println("[!] ERROR: Under Voltage Detected!");
+        Serial.println("  [!] ERROR: Under Voltage Detected!");
     }
     if (bms_t.over_temperature) {
-        Serial.println("[!] ERROR: Over Temperature Detected!");
+        Serial.println("  [!] ERROR: Over Temperature Detected!");
     }
     if (bms_t.signal_lost) {
-        Serial.println("[!] WARNING: CAN Signal Lost from some ICs.");
+        Serial.println("  [!] WARNING: CAN Signal Lost from some ICs.");
+    }
+    if (!bms_t.over_voltage && !bms_t.under_voltage && 
+        !bms_t.over_temperature && !bms_t.signal_lost) {
+        Serial.println("  [OK] System operating normally.");
     }
 
-    // 逐一檢查每個 IC 的具體數值
-    for (int i = 0; i < NUM_IC; i++) {
-        bool ic_has_issue = false;
+    // Print per-IC status
+    Serial.println("\n[Per-IC Status]");
+    for (uint8_t ic = 0; ic < NUM_IC; ic++) {
+        Serial.printf("IC %d: ", ic);
         
-        // 檢查該 IC 是否斷聯
-        if (bms_ic_info[i].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD) {
-            Serial.printf("  - IC %d: OFFLINE (Signal Lost)\n", i);
+        // Check if signal is lost for this IC
+        bool ic_offline = (bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD);
+        if (ic_offline) {
+            Serial.printf("OFFLINE (Signal Lost - Count: %lu)\n", 
+                         bms_ic_info[ic].CAN_signal_lost_count);
             continue; 
         }
-
-        // 檢查電壓範圍 (範例邏輯)
-        for (int j = 0; j < ACTIVE_CELLS_PER_IC; j++) {
-            uint16_t v = bms_ic_info[i].volt_info.voltages[j];
-            if (v > CELL_OK_MAX_CODE || v < CELL_OK_MIN_CODE) {
-                Serial.printf("  - IC %d Cell %d: Voltage Abnormal (%d)\n", i, j, v);
+        
+        // IC is online, check for specific faults
+        bool ic_has_issue = false;
+        FAULT_STATES fault_state = bms_ic_info[ic].status_info.fault_state;
+        
+        switch(fault_state) {
+            case SIGNAL_LOST:
+                Serial.println("SIGNAL LOST");
                 ic_has_issue = true;
-            }
+                break;
+            case SENSOR_FAULT:
+                Serial.println("SENSOR FAULT");
+                ic_has_issue = true;
+                break;
+            case OVER_TEMPERATURE:
+                Serial.println("OVER TEMPERATURE");
+                ic_has_issue = true;
+                break;
+            case VOLTAGE_OUT_OF_RANGE:
+                Serial.println("VOLTAGE OUT OF RANGE");
+                ic_has_issue = true;
+                break;
+            case NORMAL:
+                Serial.println("NORMAL");
+                break;
         }
-
-        // 檢查溫度
-        for (int j = 0; j < NTC_PER_IC; j++) {
-            if (bms_ic_info[i].temp_info.temperatures[j] > TEMP_LIMIT_DECI_C) {
-                Serial.printf("  - IC %d NTC %d: Over Temp (%d C)\n", i, j, bms_ic_info[i].temp_info.temperatures[j]/10);
-                ic_has_issue = true;
+        
+        if (!ic_has_issue) {
+            // Additional checks for online and normally-reporting ICs
+            bool voltage_issue = false;
+            for (uint8_t j = 0; j < ACTIVE_CELLS_PER_IC; j++) {
+                uint16_t v = bms_ic_info[ic].volt_info.voltages[j];
+                if (v > CELL_OK_MAX_CODE || v < CELL_OK_MIN_CODE) {
+                    if (!voltage_issue) {
+                        Serial.printf("  [!] Voltage Abnormal - Cell %d: %d\n", j, v);
+                        voltage_issue = true;
+                    }
+                }
+            }
+            
+            // Check temperatures
+            for (uint8_t j = 0; j < NTC_PER_IC; j++) {
+                if (bms_ic_info[ic].temp_info.temperatures[j] > TEMP_LIMIT_DECI_C) {
+                    Serial.printf("  [!] Over Temperature - NTC %d: %d (%.1f°C)\n", 
+                                 j, bms_ic_info[ic].temp_info.temperatures[j],
+                                 bms_ic_info[ic].temp_info.temperatures[j] / 10.0f);
+                }
             }
         }
     }
-    Serial.println("-----------------------------");
+    Serial.println("=============================\n");
 }
 
 void BMS_Print_Cell_Voltages() {
-    Serial.println("=== Battery Cell Voltage Report ===");
+    Serial.println("\n=== Battery Cell Voltage Report ===\n");
     
-    // 計算最大、最小和總電壓
+    // Statistics tracking
     uint16_t max_voltage_mv = 0;
     uint16_t min_voltage_mv = UINT16_MAX;
     uint32_t total_voltage_mv = 0;
     uint8_t valid_cell_count = 0;
     
-    // 輸出每個電池單元的電壓
+    // Output voltage for each cell in each IC
     for (uint8_t ic = 0; ic < NUM_IC; ic++) {
+        // Check if this IC is offline
+        if (bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD) {
+            Serial.printf("IC %d: [OFFLINE - No signal]\n\n", ic);
+            continue;
+        }
+        
         Serial.printf("IC %d:\n", ic);
         
+        // Display all cells for this IC
         for (uint8_t cell = 0; cell < ACTIVE_CELLS_PER_IC; cell++) {
-            // 將原始代碼轉換為電壓 (mV)
+            // Convert raw code to voltage (mV)
             uint32_t cell_voltage_mv = (uint32_t)(bms_ic_info[ic].volt_info.voltages[cell] * CODE_TO_VOLT * 1000);
             
-            // 只統計有效的電壓值 (非零值)
+            // Track statistics (only for non-zero values)
             if (cell_voltage_mv > 0) {
                 total_voltage_mv += cell_voltage_mv;
                 valid_cell_count++;
@@ -239,10 +372,9 @@ void BMS_Print_Cell_Voltages() {
                 }
             }
             
-            // 輸出格式: Cell X: XXXX mV
-            Serial.printf("  Cell %2d: %4d mV", cell, cell_voltage_mv);
+            // Print cell voltage with formatting (4 cells per line)
+            Serial.printf("  Cell %2d: %5d mV", cell, cell_voltage_mv);
             
-            // 每行輸出4個電池單元
             if ((cell + 1) % 4 == 0) {
                 Serial.println();
             } else {
@@ -250,32 +382,38 @@ void BMS_Print_Cell_Voltages() {
             }
         }
         
-        // 如果最後一行沒有滿4個，補上換行
+        // Ensure newline if last line incomplete
         if (ACTIVE_CELLS_PER_IC % 4 != 0) {
             Serial.println();
         }
         Serial.println();
     }
     
-    // 輸出統計信息
+    // Print voltage statistics
     Serial.println("=== Voltage Statistics ===");
-    Serial.printf("Total Cells: %d\n", NUM_IC * ACTIVE_CELLS_PER_IC);
+    Serial.printf("Total IC Cells: %d\n", NUM_IC * ACTIVE_CELLS_PER_IC);
     Serial.printf("Valid Cells: %d\n", valid_cell_count);
     
     if (valid_cell_count > 0) {
-        Serial.printf("Max Voltage: %d mV (%.3f V)\n", max_voltage_mv, max_voltage_mv / 1000.0f);
-        Serial.printf("Min Voltage: %d mV (%.3f V)\n", min_voltage_mv, min_voltage_mv / 1000.0f);
-        Serial.printf("Total Voltage: %d mV (%.3f V)\n", total_voltage_mv, total_voltage_mv / 1000.0f);
-        Serial.printf("Average Voltage: %.1f mV (%.4f V)\n", 
-                     (float)total_voltage_mv / valid_cell_count, 
-                     (float)total_voltage_mv / valid_cell_count / 1000.0f);
+        // Calculate and display voltage metrics
+        float max_voltage_v = max_voltage_mv / 1000.0f;
+        float min_voltage_v = min_voltage_mv / 1000.0f;
+        float total_voltage_v = total_voltage_mv / 1000.0f;
+        float avg_voltage_mv = (float)total_voltage_mv / valid_cell_count;
+        float avg_voltage_v = avg_voltage_mv / 1000.0f;
         
-        // 計算電壓差異
+        Serial.printf("Max Voltage:   %5d mV = %.3f V\n", max_voltage_mv, max_voltage_v);
+        Serial.printf("Min Voltage:   %5d mV = %.3f V\n", min_voltage_mv, min_voltage_v);
+        Serial.printf("Total Voltage: %5d mV = %.3f V\n", total_voltage_mv, total_voltage_v);
+        Serial.printf("Avg Voltage:   %5.1f mV = %.4f V\n", avg_voltage_mv, avg_voltage_v);
+        
+        // Calculate and display voltage difference
         uint16_t voltage_diff_mv = max_voltage_mv - min_voltage_mv;
-        Serial.printf("Voltage Difference: %d mV (%.3f V)\n", voltage_diff_mv, voltage_diff_mv / 1000.0f);
+        float voltage_diff_v = voltage_diff_mv / 1000.0f;
+        Serial.printf("Voltage Diff:  %5d mV = %.3f V\n", voltage_diff_mv, voltage_diff_v);
     } else {
-        Serial.println("No valid voltage data available");
+        Serial.println("ERROR: No valid voltage data available");
     }
     
-    Serial.println("============================");
+    Serial.println("============================\n");
 }
