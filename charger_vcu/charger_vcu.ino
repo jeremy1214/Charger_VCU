@@ -156,6 +156,7 @@ extern BMS_IC_info_t bms_ic_info[NUM_IC];
 bool bms_normal;
 // Flag set when Serial receives the literal "start" (case-insensitive)
 static volatile bool serialStartRequested = false;
+static volatile bool serialResetRequested = false;
 
 // ----------------- Function Prototypes -----------------
 bool Init_CAN();
@@ -616,8 +617,21 @@ void BMS_Monitor_Task(void *pvParameters)
                     else if (cmd == "e" || cmd == "stop" || cmd == "exit")
                     {
                         serialStartRequested = false;
-                        bms_t.charging_states = CHARGING_FAIL;
                         Serial.println("Serial: stop command received - stopping charging.");
+                    }
+                    else if (cmd == "reset")
+                    {
+                        // Reset from FAIL state back to READY (if in FAIL state)
+                        if (bms_t.charging_states == CHARGING_FAIL)
+                        {
+                            serialResetRequested = true;
+                            serialStartRequested = false;
+                            Serial.println("Serial: reset command received - transitioning from FAIL to READY.");
+                        }
+                        else
+                        {
+                            Serial.printf("Serial: reset command ignored (not in FAIL state, current: %d)\n", bms_t.charging_states);
+                        }
                     }
                     _serialBuf = "";
                 }
@@ -881,11 +895,12 @@ void Update_Charging_State()
     case CHARGING_FAIL:
         // Check if BMS recovers - don't auto-recover, require manual button press
         // User must press button again to attempt restart
-        if (bmsReady && prechargeValid && buttonPressed)
+        if (bmsReady && prechargeValid && serialResetRequested)
         {
             // Attempt to recover by going back to READY
             bms_t.charging_states = CHARGING_READY;
             Serial.println("STATE: -> READY (Manual Recovery via Button)");
+            serialResetRequested = false;
         }
         // Ensure fault LED is ON
         digitalWrite(kFaultLedPin, HIGH);
@@ -949,8 +964,8 @@ void printSystemStatus()
     if (obc.lastRawLen > 0)
     {
         // Consolidated OBC information
-        Serial.printf("OBC Input: %.1fV, Output: %.1fV, Current: %.1fA\n",
-                      obc.onBdChrgrUDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct);
+        Serial.printf("OBC DC Output Voltage: %.1fV, Current: %.1fA, AC Input: %.1fV, Current: %.1fA\n",
+                      obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct);
         Serial.printf("OBC State: %d, Limit Mode: %s\n",
                       obc.onBdChrgrSt,
                       currentLimitHigh ? "HIGH (1.2A)" : "LOW (1.0A)");
@@ -959,7 +974,8 @@ void printSystemStatus()
     // 4. System Conditions
     Serial.println("System Conditions:");
     Serial.printf("  BMS Status: %s\n", (bms_t.bms_states == BMS_NORMAL) ? "NORMAL" : "ERROR");
-    Serial.printf("  Precharge: %s\n", (digitalRead(kPreChargePin) || havePreCharge) ? "COMPLETE" : "INCOMPLETE");
+    Serial.printf("  Precharge: %s\n", digitalRead(kPreChargePin) ? "COMPLETE" : "INCOMPLETE");
+    Serial.printf("  havePreCharge: %s\n", havePreCharge ? "YES" : "NO");
     Serial.printf("  Button: %s | Serial 'start': %s\n",
                   digitalRead(kStartButtonPin) ? "PRESSED" : "NOT",
                   serialStartRequested ? "YES" : "NO");
