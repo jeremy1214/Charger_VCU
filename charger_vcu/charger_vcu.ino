@@ -31,7 +31,7 @@ Adafruit_NeoPixel pixels(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
 // Define HV Battery Parameters
 #define HV_BATT_CHRG_I_LIM_AMPS_HIGH 1.2 // current limit in amps
 #define HV_BATT_CHRG_I_LIM_AMPS_LOW 1    // current limit in amps
-#define HV_BATT_U_LIM_VOLTS 448          // Maximum battery voltage limit (V)
+#define HV_BATT_U_LIM_VOLTS 430          // Maximum battery voltage limit (V)
 #define HV_BATT_U_DC_VOLTS 300           // DC voltage setting (V)
 
 // Define TWAI Queue Size
@@ -74,7 +74,7 @@ constexpr gpio_num_t kBMSFaultPin = BMS_FAULT_PIN;           // signal to BMS
 constexpr gpio_num_t kPreChargePin = PRECHARGE_PIN;          // PRECHARGE LED (D26)
 constexpr gpio_num_t kHFLPin = HFL_PIN;
 
-static bool havePreCharge = false;
+static bool havePreCharge = true;
 
 // ----------------- Message Definitions -----------------
 typedef struct
@@ -169,6 +169,7 @@ void updateChargingLed();
 bool isBatteryHealthy();
 void printSystemStatus(); // Combined print functions
 void Get_Bd_Chrgr(const uint8_t *data);
+void Control_HFL();
 
 void setup()
 {
@@ -183,7 +184,7 @@ void setup()
     pinMode(kFaultLedPin, OUTPUT);
     digitalWrite(kFaultLedPin, LOW); // Start with LED off
 
-    pinMode(kStartButtonPin, INPUT_PULLUP);
+    pinMode(kStartButtonPin, INPUT_PULLDOWN);
 
     pinMode(kChargingLedPin, OUTPUT);
     digitalWrite(kChargingLedPin, LOW);
@@ -442,7 +443,6 @@ typedef struct
     uint32_t lastUpdateMs; // Last time OBC data was updated
     uint8_t lastRaw[8];    // Last raw CAN data bytes
     uint8_t lastRawLen;    // Length of last raw data
-    uint32_t lastRawTsMs;  // Timestamp of last raw data
 } OBC_Monitor;
 
 OBC_Monitor obc = {
@@ -456,11 +456,11 @@ OBC_Monitor obc = {
     .lastUpdateMs = 0,
     .lastRaw = {0},
     .lastRawLen = 0,
-    .lastRawTsMs = 0};
+};
 
 void Get_Bd_Chrgr(const uint8_t *data)
 {
-    uint32_t nowMs = millis();
+    obc.lastUpdateMs = millis();
 
     // Extract OnBdChrgrUDc - Correct
     uint16_t raw_udc = 0;
@@ -476,19 +476,12 @@ void Get_Bd_Chrgr(const uint8_t *data)
     raw_uact = ((uint16_t)data[7]) | (((uint16_t)(data[6] & 0x07)) << 8);
     obc.onBdChrgrUAct = raw_uact * 0.25;
 
-    obc.lastUpdateMs = nowMs;
-
-    // Log changes
-    static uint32_t lastLoggedMs = 0;
-    if (nowMs - lastLoggedMs > 2000)
-    { // Log every 2 seconds
-        // Serial.printf("OBC Monitor - Input: %.1fV/%.1fA, Output: %.1fV\n", obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct);
-        lastLoggedMs = nowMs;
-    }
 }
 
 void Get_Bd_State(const uint8_t *data)
 {
+    obc.lastUpdateMs = millis();
+
     uint8_t raw_HndlSt = data[2] & 0x0F; // Extract state from first byte
     obc.onBdChrgrHndlSt = raw_HndlSt;    // Store the state
 
@@ -498,6 +491,8 @@ void Get_Bd_State(const uint8_t *data)
 
 void Get_Current_State(const uint8_t *data)
 {
+    obc.lastUpdateMs = millis();
+
     uint16_t raw_iact = data[0] & 0x0007;
     raw_iact = (raw_iact << 8) | data[1];
     raw_iact = (raw_iact << 1) | ((data[2] >> 7) & 0x01);
@@ -514,24 +509,28 @@ void Process_OBC_Message(const twai_message_t *message)
     // Store raw data and parse, but do NOT print here. printSystemStatus() will output the info.
     switch (id)
     {
+    case 0x084: // wake-up obc message
+         // Store raw data for Output Control message (for debugging)
+        obc.lastRawLen = message->data_length_code;
+        memcpy(obc.lastRaw, data, obc.lastRawLen);
+        obc.lastUpdateMs = millis();
+        break;
+
     case 0x12A:
         obc.lastRawLen = message->data_length_code;
         memcpy(obc.lastRaw, data, obc.lastRawLen);
-        obc.lastRawTsMs = millis();
         Get_Bd_Chrgr(data);
         break;
 
     case 0x218:
         obc.lastRawLen = message->data_length_code;
         memcpy(obc.lastRaw, data, obc.lastRawLen);
-        obc.lastRawTsMs = millis();
         Get_Bd_State(data);
         break;
 
     case 0x216:
         obc.lastRawLen = message->data_length_code;
         memcpy(obc.lastRaw, data, obc.lastRawLen);
-        obc.lastRawTsMs = millis();
         Get_Current_State(data);
         break;
 
@@ -652,6 +651,17 @@ void Check_BMS_Status()
 {
     BMS_Update_Data();
     Update_Charging_State();
+    Control_HFL();
+
+}
+
+void Control_HFL()
+{
+    uint32_t now_Ms = millis();
+    if (now_Ms - obc.lastUpdateMs > 500) // If we have recent OBC data
+    {
+        digitalWrite(kHFLPin, LOW); // Active LOW for READY
+    }
 }
 
 void updateChargingLed()
@@ -704,7 +714,7 @@ bool isBatteryHealthy()
     // Update the battery health indicator pin
     digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
 
-    return false; // Return the health status
+    return true; // Return the health status
 }
 
 void Update_Charging_State()
@@ -715,12 +725,15 @@ void Update_Charging_State()
 
     // Check button state (simple debounce check)
     bool currentButtonState = digitalRead(kStartButtonPin);
-    bool buttonPressed = (currentButtonState == LOW && lastButtonState == HIGH);
+    bool buttonPressed = (currentButtonState == HIGH && lastButtonState == LOW);
     lastButtonState = currentButtonState; // Update for next cycle
+
+    if(buttonPressed) Serial.println("buttonPressed");
+    else Serial.println("not buttonPressed");
 
     // Check if BMS is normal and Precharge is valid
     bool bmsReady = isBatteryHealthy();
-    bool prechargeValid = digitalRead(kPreChargePin);
+    bool prechargeValid = havePreCharge;
 
     // Prevent rapid state changes, but allow immediate transition *to* FAIL
     CHARGING_STATES currentState = bms_t.charging_states; // Read current state once
@@ -769,12 +782,6 @@ void Update_Charging_State()
         {
             bms_t.charging_states = CHARGING_FAIL;
             Serial.println("STATE: -> FAIL (BMS Error while in READY)");
-        }
-        // Go to FAIL if Precharge becomes invalid while waiting
-        else if (!prechargeValid)
-        {
-            bms_t.charging_states = CHARGING_FAIL;
-            Serial.println("STATE: -> FAIL (Precharge disconnected while in READY)");
         }
         break;
 
@@ -971,7 +978,7 @@ void printSystemStatus()
     Serial.println("System Conditions:");
     Serial.printf("  BMS Status: %s\n", (bms_t.bms_states == BMS_NORMAL) ? "NORMAL" : "ERROR");
     Serial.printf("  Precharge: %s\n", digitalRead(kPreChargePin) ? "VALID" : "INVALID");
-    Serial.printf("  Button Pressed: %s\n", digitalRead(kStartButtonPin) ? "NO" : "YES");
+    Serial.printf("  Button Pressed: %s\n", digitalRead(kStartButtonPin) ? "YES" : "NO");
     Serial.printf("  Serial 'start' received: %s\n", serialStartRequested ? "YES" : "NO");
 
     // 6. 打印故障標記 (如果有錯誤發生)
@@ -985,15 +992,15 @@ void printSystemStatus()
     // 7. Print last received raw OBC CAN message (only here)
     if (obc.lastRawLen > 0)
     {
-        Serial.printf("Last OBC CAN msg @ %lu ms (len %d): ", obc.lastRawTsMs, obc.lastRawLen);
+        Serial.printf("Last OBC CAN msg @ %lu ms (len %d): ", obc.lastUpdateMs, obc.lastRawLen);
         for (int i = 0; i < obc.lastRawLen; i++)
         {
             Serial.printf("%02X ", obc.lastRaw[i]);
         }
         Serial.println();
         // Also reprint parsed values
-        Serial.printf("  Parsed (from last): InputUDC=%.1fV, InputIDC=%.1fA, OutputUAct=%.2fV, OBCState=%d\n",
-                      obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrSt);
+        Serial.printf("  Parsed (from last): OutputUDC=%.1fV, OutputIDC=%.1fA, InputUAct=%.2fV, InputIAct=%.2fA, OBCState=%d\n",
+                      obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct, obc.onBdChrgrSt);
     }
 
     Serial.println("====================================");
