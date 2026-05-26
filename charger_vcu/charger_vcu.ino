@@ -274,9 +274,7 @@ void setup()
 
 void loop()
 {
-
     pixels.clear(); // 清除顏色
-
     // // 設定顏色為綠色 (R, G, B) - 數值範圍 0-255
     pixels.setPixelColor(0, pixels.Color(0, 150, 0));
     pixels.show(); // 更新 LED 顯示
