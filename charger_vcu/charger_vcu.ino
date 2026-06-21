@@ -688,6 +688,7 @@ void Control_HFL()
     if (now_Ms - obc.lastUpdateMs > 500) // If we have recent OBC data
     {
         digitalWrite(kHFLPin, LOW); // Active LOW for READY
+        serial.println("Error: OBC disconnected. Shutting down HFL.")
     }
 }
 
