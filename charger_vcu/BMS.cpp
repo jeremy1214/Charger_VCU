@@ -54,8 +54,12 @@ void BMS_Init()
 BMS_STATES BMS_Check_Fault()
 {
     // Priority 1: Sensor faults (voltage/temperature issues)
-    if(bms_t.over_voltage || bms_t.under_voltage || bms_t.over_temperature){
-        return BMS_SENSOR_FAULT;
+    for(uint8_t ic = 0; ic < NUM_IC; ic++){
+        if(bms_ic_info[ic].status_info.fault_state == SENSOR_FAULT ||
+           bms_ic_info[ic].status_info.fault_state == OVER_TEMPERATURE ||
+           bms_ic_info[ic].status_info.fault_state == VOLTAGE_OUT_OF_RANGE){
+            return BMS_SENSOR_FAULT;
+        }
     }
     
     // Priority 2: Communication faults (signal lost)
@@ -86,28 +90,29 @@ void BMS_Update_Volt(){
             bms_t.total_voltage_mV += cell_voltage_mv;
         }
         
-        // Check if min or max voltage for this IC is out of range
-        uint32_t max_voltage_mv = (uint32_t)(CELL_OK_MAX_CODE * CODE_TO_VOLT * 1000);
-        uint32_t min_voltage_mv = (uint32_t)(CELL_OK_MIN_CODE * CODE_TO_VOLT * 1000);
+        // // Check if min or max voltage for this IC is out of range
+        // uint32_t max_voltage_mv = (uint32_t)(CELL_OK_MAX_CODE * CODE_TO_VOLT * 1000);
+        // uint32_t min_voltage_mv = (uint32_t)(CELL_OK_MIN_CODE * CODE_TO_VOLT * 1000);
         
-        if(bms_ic_info[ic].status_info.max_voltage > max_voltage_mv){
-            bms_t.over_voltage = true;
-        }
-        if(bms_ic_info[ic].status_info.min_voltage < min_voltage_mv){
-            bms_t.under_voltage = true;
-        }
+        // if(bms_ic_info[ic].status_info.max_voltage > max_voltage_mv){
+        //     bms_t.over_voltage = true;
+        // }
+        // if(bms_ic_info[ic].status_info.min_voltage < min_voltage_mv){
+        //     bms_t.under_voltage = true;
+        // }
     }
 }
 
 void BMS_Update_State(){
     bms_t.signal_lost = false;  // Reset signal_lost flag before checking
     bms_t.over_temperature = false;  // Reset temperature flag
+    bms_t.bms_fault = false;  // Reset overall fault flag
     
     for(uint8_t ic = 0; ic < NUM_IC; ic++){
         // Increment signal lost counter ONLY if this IC has not received messages
         // The counter is reset to 0 when a message is received (via BMS_Reset_Signal_Lost_Count)
         if(bms_ic_info[ic].CAN_signal_lost_count < UINT32_MAX){
-            bms_ic_info[ic].CAN_signal_lost_count++;  
+            bms_ic_info[ic].CAN_signal_lost_count++;
         }
         
         // Check if signal is lost for this IC based on counter threshold
@@ -116,9 +121,9 @@ void BMS_Update_State(){
         // Decode fault bits to check for additional fault conditions
         uint8_t fault_bits = bms_ic_info[ic].status_info.fault_bits;
         
-        // Determine fault state for this IC
+        // Determine fault state for this IC solely from fault bits or signal loss
         FAULT_STATES ic_fault_state = NORMAL;
-        if(fault_bits & 0x01){  // Signal lost bit
+        if((fault_bits & 0x01) || ic_signal_lost){  // Signal lost bit or no CAN messages
             ic_fault_state = SIGNAL_LOST;
         }
         else if(fault_bits & 0x02){  // Sensor fault bit
@@ -126,25 +131,27 @@ void BMS_Update_State(){
         }
         else if(fault_bits & 0x04){  // Over temperature bit
             ic_fault_state = OVER_TEMPERATURE;
-            bms_t.over_temperature = true;
         }
         else if(fault_bits & 0x08){  // Voltage out of range bit
             ic_fault_state = VOLTAGE_OUT_OF_RANGE;
-        }
-        else if(ic_signal_lost){  // No signal from counter check
-            ic_fault_state = SIGNAL_LOST;
         }
         
         // Update IC fault state
         bms_ic_info[ic].status_info.fault_state = ic_fault_state;
         
-        // Update overall BMS signal_lost flag if any IC has lost signal
-        if(ic_fault_state == SIGNAL_LOST || ic_signal_lost){
+        // Update overall BMS flags based on fault bits / state only
+        if(ic_fault_state == SIGNAL_LOST){
             bms_t.signal_lost = true;
+        }
+        if(ic_fault_state == OVER_TEMPERATURE){
+            bms_t.over_temperature = true;
+        }
+        if(ic_fault_state != NORMAL){
+            bms_t.bms_fault = true;
         }
     }
 
-    // Update overall BMS state based on all fault conditions
+    // Update overall BMS state based on fault state rather than computed voltages/temps
     bms_t.bms_states = BMS_Check_Fault();
 }
 
@@ -251,22 +258,18 @@ void BMS_Update_Data(){
 void BMS_Print_Diagnostics() {
     Serial.println("\n=== BMS Diagnostic Report ===");
     
-    // Print overall BMS fault status
+    // Print overall BMS fault status based on fault bits and signal status only
     Serial.println("[Overall Status]");
-    if (bms_t.over_voltage) {
-        Serial.println("  [!] ERROR: Over Voltage Detected!");
-    }
-    if (bms_t.under_voltage) {
-        Serial.println("  [!] ERROR: Under Voltage Detected!");
-    }
-    if (bms_t.over_temperature) {
-        Serial.println("  [!] ERROR: Over Temperature Detected!");
-    }
     if (bms_t.signal_lost) {
         Serial.println("  [!] WARNING: CAN Signal Lost from some ICs.");
     }
-    if (!bms_t.over_voltage && !bms_t.under_voltage && 
-        !bms_t.over_temperature && !bms_t.signal_lost) {
+    if (bms_t.bms_states == BMS_SENSOR_FAULT) {
+        Serial.println("  [!] ERROR: Sensor fault detected from fault bits.");
+    }
+    if (bms_t.bms_states == BMS_FAULT && !bms_t.signal_lost) {
+        Serial.println("  [!] ERROR: Fault detected from fault bits.");
+    }
+    if (!bms_t.signal_lost && bms_t.bms_states == BMS_NORMAL) {
         Serial.println("  [OK] System operating normally.");
     }
 
