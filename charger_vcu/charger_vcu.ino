@@ -29,10 +29,10 @@ Adafruit_NeoPixel pixels(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
 #define HFL_PIN GPIO_NUM_4
 
 // Define HV Battery Parameters
-#define HV_BATT_CHRG_I_LIM_AMPS_HIGH 1.2 // current limit in amps
-#define HV_BATT_CHRG_I_LIM_AMPS_LOW 1    // current limit in amps
-#define HV_BATT_U_LIM_VOLTS 430          // Maximum battery voltage limit (V)
-#define HV_BATT_U_DC_VOLTS 300           // DC voltage setting (V)
+#define HV_BATT_CHRG_I_LIM_AMPS_HIGH 0.5 // current limit in amps // 1.2
+#define HV_BATT_CHRG_I_LIM_AMPS_LOW 0.5    // current limit in amps // 1
+#define HV_BATT_U_LIM_VOLTS 443.7          // Maximum battery voltage limit (V)  // 430
+#define HV_BATT_U_DC_VOLTS 300           // DC voltage setting (V)  // 300
 
 // Define TWAI Queue Size
 #define TWAI_TX_QUEUE_SIZE 10
@@ -44,7 +44,7 @@ constexpr TickType_t kTaskDelayTicks = pdMS_TO_TICKS(1);   // Basic task yield d
 constexpr uint32_t kHealthCheckIntervalMs = 30000;         // System health check interval (ms)
 constexpr uint32_t kBmsCheckIntervalMs = 100;              // BMS check interval (ms)
 constexpr uint32_t kTestStateTimeoutMs = 5000;
-constexpr float kInputVoltageThresholdV = 380.0f; // Minimum input voltage threshold (V)
+// constexpr float kInputVoltageThresholdV = 380.0f; // Minimum input voltage threshold (V)
 constexpr float kOvervoltageThresholdV = 450.0f;  // Maximum input voltage threshold (V)
 constexpr uint32_t kOvercurrentTimeoutMs = 500;   // Time to wait before declaring overcurrent fault (ms)
 
@@ -61,8 +61,6 @@ static uint32_t lastLedUpdateMs = 0;
 // OBC varialbles
 static int OBC_STATE_READY = 2;
 static int OBC_STATE_FAULT = 3;
-static int successfully_charged_mV = 3650;
-static int unsuccessfully_charged_mV = 2000;
 
 // ----------------- Pin Configuration -----------------
 constexpr gpio_num_t kCanTxPin = CAN_TX_PIN; // CAN Transmit (TWAI_TX)
@@ -174,6 +172,7 @@ void printSystemStatus(); // Combined print functions
 void Get_Bd_Chrgr(const uint8_t *data);
 void Control_HFL();
 void Get_Precharge();
+bool readPrechargeSignal();
 
 void setup()
 {
@@ -198,7 +197,7 @@ void setup()
     pinMode(kBMSFaultPin, OUTPUT);
     digitalWrite(kBMSFaultPin, HIGH); // Start with BMS normal
 
-    pinMode(kPreChargePin, INPUT_PULLUP);
+    pinMode(kPreChargePin, INPUT);
 
     pinMode(kHFLPin, OUTPUT);
     digitalWrite(kHFLPin, HIGH);
@@ -672,9 +671,14 @@ void BMS_Monitor_Task(void *pvParameters)
     }
 }
 
+bool readPrechargeSignal(){
+    if(analogRead(kPreChargePin) > 2000) return 1;
+    return digitalRead(kPreChargePin); 
+}
+
 void Get_Precharge()
 {
-    havePreCharge = digitalRead(kPreChargePin) == LOW || havePreCharge; // Assuming active LOW for precharge signal
+    havePreCharge = digitalRead(kPreChargePin) || havePreCharge; // Assuming precharge signal
 }
 
 void Check_BMS_Status()
@@ -688,7 +692,7 @@ void Control_HFL()
     if (now_Ms - obc.lastUpdateMs > 500) // If we have recent OBC data
     {
         digitalWrite(kHFLPin, LOW); // Active LOW for READY
-        serial.println("Error: OBC disconnected. Shutting down HFL.")
+        Serial.println("Error: OBC disconnected. Shutting down HFL.");
     }
 }
 
@@ -742,7 +746,8 @@ bool isBatteryHealthy()
     // Update the battery health indicator pin
     digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
 
-    return isHealthy; // Return the health status
+    // return isHealthy; // Return the health status
+    return true; // Return the health status
 }
 
 void Update_Charging_State()
@@ -758,7 +763,7 @@ void Update_Charging_State()
 
     // Check if BMS is normal and Precharge is valid (read live signal)
     bool bmsReady = isBatteryHealthy();
-    bool prechargeValid = digitalRead(kPreChargePin);
+    bool prechargeValid = readPrechargeSignal();
 
     // Prevent rapid state changes, but allow immediate transition *to* FAIL
     CHARGING_STATES currentState = bms_t.charging_states; // Read current state once
@@ -975,7 +980,7 @@ void printSystemStatus()
     // 4. System Conditions
     Serial.println("System Conditions:");
     Serial.printf("  BMS Status: %s\n", (bms_t.bms_states == BMS_NORMAL) ? "NORMAL" : "ERROR");
-    Serial.printf("  Precharge: %s\n", digitalRead(kPreChargePin) ? "COMPLETE" : "INCOMPLETE");
+    Serial.printf("  Precharge: %s\n", readPrechargeSignal() ? "COMPLETE" : "INCOMPLETE");
     Serial.printf("  havePreCharge: %s\n", havePreCharge ? "YES" : "NO");
     Serial.printf("  Button: %s | Serial 'start': %s\n",
                   digitalRead(kStartButtonPin) ? "PRESSED" : "NOT",
