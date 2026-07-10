@@ -45,6 +45,7 @@ constexpr uint32_t kTestStateTimeoutMs = 5000;
 constexpr float kInputVoltageThresholdV = 8.0f;   // Minimum input voltage threshold (V)
 constexpr float kOvervoltageThresholdV = 396.0f;  // Maximum input voltage threshold (V) //450
 constexpr uint32_t kOvercurrentTimeoutMs = 500;   // Time to wait before declaring overcurrent fault (ms)
+constexpr uint8_t overTemperatureLimit = 60; // Maximum allowed temperature in Celsius
 
 // ----------------- LED Constants -----------------
 constexpr uint32_t kTestLedIntervalMs = 250;        // TEST state flash interval (ms)
@@ -122,8 +123,7 @@ constexpr uint16_t kHvBattChrgnILimBits = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_
 const uint8_t kEnableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC8, 0x00};
 const uint8_t kDisableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC0, 0x00};
 
-const uint16_t Max_mv = 3417000;
-const uint16_t Min_mv = 3060000;
+const uint16_t Max_mv = 443700;
 static float currentLimit = HV_BATT_CHRG_I_LIM_AMPS;
 
 CANMessageConfig_t messageConfigs[] = {
@@ -484,7 +484,7 @@ void Get_Current_State(const uint8_t *data)
     uint16_t raw_iact = data[0] & 0x0007;
     raw_iact = (raw_iact << 8) | data[1];
     raw_iact = (raw_iact << 1) | ((data[2] >> 7) & 0x01);
-    obc.onBdChrgrIAct = raw_iact * 0.1; // Store the raw current value
+    obc.onBdChrgrIAct = raw_iact * 0.1 - 200; // Store the raw current value
 
     uint8_t raw_OBCSt = (data[2] >> 3) & 0x0F; // Extract state from second byte
     obc.onBdChrgrSt = raw_OBCSt;               // Store the state
@@ -872,7 +872,14 @@ void Update_Charging_State()
             overcurrentStartTimeMs = 0; // Reset timer if current is normal
         }
 
-        if (obc.onBdChrgrUDc > kHvBattULimBits){
+        // if(obc.onBdChrgrT > (overTemperatureLimit + 5)){
+        //     bms_t.charging_states = CHARGING_FAIL;
+        //     Serial.printf("STATE: -> FAIL (Overtemperature detected: %.1f°C > %.1f°C)\n",
+        //                   obc.onBdChrgrT, overTemperatureLimit);
+        //     break;
+        // }
+
+        if (obc.onBdChrgrUDc > (kHvBattULimBits - 0.5)){
                 bms_t.charging_states = CHARGING_READY;
                 Serial.println("STATE: -> READY (Charge completed successfully)");
         }
@@ -953,8 +960,8 @@ void Print_System_Status()
     if (obc.lastRawLen > 0)
     {
         // Consolidated OBC information
-        Serial.printf("OBC DC Output Voltage: %.1fV, Current: %.1fA, AC Input: %.1fV, Current: %.1fA\n",
-                      obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct);
+        Serial.printf("OBC DC Output Voltage: %.1fV, Current: %.1fA, AC Input: %.1fV, Current: %.1fA, Temperature: %.1f°C\n",
+                      obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct, obc.onBdChrgrT);
     }
 
     // 4. System Conditions
