@@ -162,7 +162,6 @@ void Update_Charging_Led();
 void Print_System_Status(); // Combined print functions
 void Get_Bd_Chrgr(const uint8_t *data);
 void Control_HFL();
-// void Get_Precharge();
 bool Read_Precharge_Signal();
 
 void setup()
@@ -650,8 +649,6 @@ void BMS_Monitor_Task(void *pvParameters)
 
         Control_HFL();
 
-        // Get_Precharge();
-
         static uint32_t last_print_time_Ms = 0;
         uint32_t now_Ms = millis();
         if (now_Ms - last_print_time_Ms > 1000)
@@ -666,11 +663,6 @@ bool Read_Precharge_Signal(){
     if(analogRead(kPreChargePin) > 2000) return 1;
     return digitalRead(kPreChargePin); 
 }
-
-// void Get_Precharge()
-// {
-//     havePreCharge = digitalRead(kPreChargePin) || havePreCharge; // Assuming precharge signal
-// }
 
 void Check_BMS_Status()
 {
