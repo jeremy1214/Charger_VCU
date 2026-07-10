@@ -25,13 +25,11 @@ Adafruit_NeoPixel pixels(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
 #define BATTERY_HEALTH_PIN GPIO_NUM_10
 #define BMS_FAULT_PIN GPIO_NUM_21
 #define PRECHARGE_PIN GPIO_NUM_6
-#define COOLING_SYSTEM_PIN GPIO_NUM_11
 #define HFL_PIN GPIO_NUM_4
 
 // Define HV Battery Parameters
-#define HV_BATT_CHRG_I_LIM_AMPS_HIGH 0.5 // current limit in amps // 1.2
-#define HV_BATT_CHRG_I_LIM_AMPS_LOW 0.5    // current limit in amps // 1
-#define HV_BATT_U_LIM_VOLTS 443.7          // Maximum battery voltage limit (V)  // 430
+#define HV_BATT_CHRG_I_LIM_AMPS 7.0 // current limit in amps 
+#define HV_BATT_U_LIM_VOLTS 420.0          // Maximum battery voltage limit (V)  // 443.7
 #define HV_BATT_U_DC_VOLTS 300           // DC voltage setting (V)  // 300
 
 // Define TWAI Queue Size
@@ -44,8 +42,8 @@ constexpr TickType_t kTaskDelayTicks = pdMS_TO_TICKS(1);   // Basic task yield d
 constexpr uint32_t kHealthCheckIntervalMs = 30000;         // System health check interval (ms)
 constexpr uint32_t kBmsCheckIntervalMs = 100;              // BMS check interval (ms)
 constexpr uint32_t kTestStateTimeoutMs = 5000;
-// constexpr float kInputVoltageThresholdV = 380.0f; // Minimum input voltage threshold (V)
-constexpr float kOvervoltageThresholdV = 450.0f;  // Maximum input voltage threshold (V)
+constexpr float kInputVoltageThresholdV = 8.0f;   // Minimum input voltage threshold (V)
+constexpr float kOvervoltageThresholdV = 396.0f;  // Maximum input voltage threshold (V) //450
 constexpr uint32_t kOvercurrentTimeoutMs = 500;   // Time to wait before declaring overcurrent fault (ms)
 
 // ----------------- LED Constants -----------------
@@ -54,6 +52,7 @@ constexpr uint32_t kReadyLedIntervalMs = 1000;      // READY state flash interva
 constexpr uint32_t kStateChangeMinIntervalMs = 500; // Minimum time between state changes (reduced)
 // Grace period for transient precharge loss before declaring FAIL
 constexpr uint32_t kPrechargeWarningTimeoutMs = 1000; // ms
+
 
 // LED state variables
 static uint32_t lastLedUpdateMs = 0;
@@ -65,7 +64,6 @@ static int OBC_STATE_FAULT = 3;
 // ----------------- Pin Configuration -----------------
 constexpr gpio_num_t kCanTxPin = CAN_TX_PIN; // CAN Transmit (TWAI_TX)
 constexpr gpio_num_t kCanRxPin = CAN_RX_PIN; // CAN Receive (TWAI_RX)
-// constexpr gpio_num_t kSDCPin         = SDC_PIN;   // SDC input (active-high)
 constexpr gpio_num_t kFaultLedPin = FAULT_LED_PIN;           // Fault LED (D5)
 constexpr gpio_num_t kStartButtonPin = START_BUTTON_PIN;     // Start charging button
 constexpr gpio_num_t kChargingLedPin = CHARGING_LED_PIN;     // Charging indicator LED (D27)
@@ -74,7 +72,7 @@ constexpr gpio_num_t kBMSFaultPin = BMS_FAULT_PIN;           // signal to BMS
 constexpr gpio_num_t kPreChargePin = PRECHARGE_PIN;          // PRECHARGE LED (D26)
 constexpr gpio_num_t kHFLPin = HFL_PIN;
 
-static bool havePreCharge = false;
+// static bool havePreCharge = false;
 
 // ----------------- Message Definitions -----------------
 typedef struct
@@ -117,23 +115,16 @@ constexpr uint16_t hvBattChrgnILimTo13bit(uint16_t amps)
 // Pre-calculate parts of the message data where possible
 constexpr uint16_t kHvBattULimBits = hvBattULimTo11bit(HV_BATT_U_LIM_VOLTS);
 constexpr uint16_t kHvBattUDcBits = hvBattUDcTo11bit(HV_BATT_U_DC_VOLTS);
-constexpr uint16_t kHvBattChrgnILimBits_HIGH = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_LIM_AMPS_HIGH);
-constexpr uint16_t kHvBattChrgnILimBits_LOW = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_LIM_AMPS_LOW);
+constexpr uint16_t kHvBattChrgnILimBits = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_LIM_AMPS);
 
 // --- CAN Message Send to OBC Configuration ---
 // Define fixed data arrays for enable/disable messages
 const uint8_t kEnableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC8, 0x00};
 const uint8_t kDisableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC0, 0x00};
 
-// Define fixed data arrays for charger current limits
-const uint8_t kChrgnILimHighData[8] = {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits_HIGH >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits_HIGH & 0xFF), 0xE0, 0x00};
-const uint8_t kChrgnILimLowData[8] = {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits_LOW >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits_LOW & 0xFF), 0xE0, 0x00};
-
-static bool currentLimitHigh = true; // Start with high limit
 const uint16_t Max_mv = 3417000;
 const uint16_t Min_mv = 3060000;
-const uint16_t Change_mv = 3345600;
-static float currentLimit = HV_BATT_CHRG_I_LIM_AMPS_HIGH;
+static float currentLimit = HV_BATT_CHRG_I_LIM_AMPS;
 
 CANMessageConfig_t messageConfigs[] = {
     // ID, Length, Data (Template), Interval (ms), LastSentMs
@@ -142,7 +133,7 @@ CANMessageConfig_t messageConfigs[] = {
     {0x178, 8, {0x60, 0x00, 0x00, 0x00, 0x28, 0xC3, static_cast<uint8_t>((0b00011 << 3) | (kHvBattULimBits >> 8)), static_cast<uint8_t>(kHvBattULimBits & 0xFF)}, 70, 0},                    // Parameters: HvBattULim
     {0x084, 8, {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC0, 0x00}, 25, 0},                                                                                                                     // Output Control (default disable)
     {0x056, 8, {0x00, 0x02, 0x00, 0x00, 0x01, 0x61, 0x00, 0x00}, 15, 0},                                                                                                                     // Vehicle Sim
-    {0x289, 8, {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits_HIGH >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits_HIGH & 0xFF), 0xE0, 0x00}, 100, 0}, // Parameters: HvBattChrgnILim (default High)
+    {0x289, 8, {0x00, 0x01, 0x04, 0x00, static_cast<uint8_t>((0b000 << 5) | (kHvBattChrgnILimBits >> 8)), static_cast<uint8_t>(kHvBattChrgnILimBits & 0xFF), 0xE0, 0x00}, 100, 0}, // Parameters: HvBattChrgnILim (default High)
     {0x345, 8, {0x00, 0x00, 0x01, 0x01, 0xFE, 0x32, 0x32, 0x10}, 1000, 0}                                                                                                                    // Parameters: HvBattPreHeatgReq (No Preheat)
 };
 
@@ -166,13 +157,13 @@ void Check_BMS_Status();
 void Process_BMS_Message(const twai_message_t *message);
 void Process_OBC_Message(const twai_message_t *message);
 void Update_Charging_State();
-void updateChargingLed();
-bool isBatteryHealthy();
-void printSystemStatus(); // Combined print functions
+void Update_Charging_Led();
+// bool isBatteryHealthy();
+void Print_System_Status(); // Combined print functions
 void Get_Bd_Chrgr(const uint8_t *data);
 void Control_HFL();
-void Get_Precharge();
-bool readPrechargeSignal();
+// void Get_Precharge();
+bool Read_Precharge_Signal();
 
 void setup()
 {
@@ -243,7 +234,7 @@ void setup()
         NULL,      // Parameters
         2,         // Priority
         NULL,      // Task handle
-        0          // Core ID (Core 1 - separate from CAN)
+        0          // Core ID (Core 0 - separate from CAN)
     );
 
     xTaskCreatePinnedToCore(
@@ -253,7 +244,7 @@ void setup()
         NULL,         // Parameters
         1,            // Priority (lower)
         NULL,         // Task handle
-        0             // Core ID (Core 1)
+        0             // Core ID (Core 0)
     );
 
     Serial.println("System Setup Complete. Tasks Running.");
@@ -504,7 +495,7 @@ void Process_OBC_Message(const twai_message_t *message)
 {
     const uint16_t id = static_cast<uint16_t>(message->identifier);
     const uint8_t *data = message->data;
-    // Store raw data and parse, but do NOT print here. printSystemStatus() will output the info.
+    // Store raw data and parse, but do NOT print here. Print_System_Status() will output the info.
     switch (id)
     {
     case 0x084: // wake-up obc message
@@ -653,33 +644,33 @@ void BMS_Monitor_Task(void *pvParameters)
 
         Check_BMS_Status();
 
-        updateChargingLed();
+        Update_Charging_Led();
 
         Update_Charging_State();
 
         Control_HFL();
 
-        Get_Precharge();
+        // Get_Precharge();
 
         static uint32_t last_print_time_Ms = 0;
         uint32_t now_Ms = millis();
         if (now_Ms - last_print_time_Ms > 1000)
         {
-            printSystemStatus();
+            Print_System_Status();
             last_print_time_Ms = now_Ms;
         }
     }
 }
 
-bool readPrechargeSignal(){
+bool Read_Precharge_Signal(){
     if(analogRead(kPreChargePin) > 2000) return 1;
     return digitalRead(kPreChargePin); 
 }
 
-void Get_Precharge()
-{
-    havePreCharge = digitalRead(kPreChargePin) || havePreCharge; // Assuming precharge signal
-}
+// void Get_Precharge()
+// {
+//     havePreCharge = digitalRead(kPreChargePin) || havePreCharge; // Assuming precharge signal
+// }
 
 void Check_BMS_Status()
 {
@@ -692,11 +683,11 @@ void Control_HFL()
     if (now_Ms - obc.lastUpdateMs > 500) // If we have recent OBC data
     {
         digitalWrite(kHFLPin, LOW); // Active LOW for READY
-        Serial.println("Error: OBC disconnected. Shutting down HFL.");
+        // Serial.println("Error: OBC disconnected. Shutting down HFL.");
     }
 }
 
-void updateChargingLed()
+void Update_Charging_Led()
 {
     uint32_t now_Ms = millis();
 
@@ -733,22 +724,22 @@ void updateChargingLed()
     }
 }
 
-bool isBatteryHealthy()
-{
-    bool isHealthy = true; // Default to healthy
+// bool isBatteryHealthy()
+// {
+//     bool isHealthy = true; // Default to healthy
 
-    // Check BMS library reported faults
-    if (bms_t.bms_states != BMS_NORMAL)
-    { //
-        isHealthy = false;
-    }
+//     // Check BMS library reported faults
+//     if (bms_t.bms_states != BMS_NORMAL)
+//     { //
+//         isHealthy = false;
+//     }
 
-    // Update the battery health indicator pin
-    digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
+//     // Update the battery health indicator pin
+//     digitalWrite(kBatteryHealthPin, isHealthy ? LOW : HIGH);
 
-    // return isHealthy; // Return the health status
-    return true; // Return the health status
-}
+//     // return isHealthy; // Return the health status
+//     return true; // Return the health status
+// }
 
 void Update_Charging_State()
 {
@@ -760,10 +751,11 @@ void Update_Charging_State()
     bool currentButtonState = digitalRead(kStartButtonPin);
     bool buttonPressed = (currentButtonState == HIGH && lastButtonState == LOW);
     lastButtonState = currentButtonState; // Update for next cycle
+    buttonPressed = true;
 
     // Check if BMS is normal and Precharge is valid (read live signal)
-    bool bmsReady = isBatteryHealthy();
-    bool prechargeValid = readPrechargeSignal();
+    // bool bmsReady = isBatteryHealthy();
+    bool prechargeValid = Read_Precharge_Signal();
 
     // Prevent rapid state changes, but allow immediate transition *to* FAIL
     CHARGING_STATES currentState = bms_t.charging_states; // Read current state once
@@ -780,50 +772,52 @@ void Update_Charging_State()
     {
     case CHARGING_INIT:
         // Transition to READY once BMS is initialized and normal
-        if (bmsReady)
-        {
-            bms_t.charging_states = CHARGING_READY;
-            Serial.println("STATE: -> READY (BMS Normal)");
-        }
+        if(obc.onBdChrgrUDc < kInputVoltageThresholdV){
+            bms_t.charging_states = CHARGING_TEST;
+            Serial.println("WARN: Obc is not connected or initial input voltage is too low");
+            break;
+        } 
+        bms_t.charging_states = CHARGING_READY;
+        Serial.println("STATE: -> READY");
         break;
 
     case CHARGING_TEST:
         // Not used in new logic - skip directly to READY
-        bms_t.charging_states = CHARGING_READY;
-        Serial.println("STATE: -> READY");
+        if(obc.onBdChrgrUDc > kInputVoltageThresholdV && obc.onBdChrgrHndlSt == OBC_STATE_READY){
+            bms_t.charging_states = CHARGING_READY;
+            Serial.println("chrgrHndlSt:");
+            Serial.println(obc.onBdChrgrHndlSt);
+            Serial.println("STATE: -> READY");
+            break;
+        }
+        // else: Either waiting for battery to be healthy or for input voltage to reach 380V -> Remain in TEST
+        else {
+            // Add periodic status update when in TEST state
+            static uint32_t lastTestStateUpdateMs = 0;
+            if (nowMs - lastTestStateUpdateMs > 5000) { // Update every 5 seconds
+                if (obc.onBdChrgrUDc < kInputVoltageThresholdV) {
+                    Serial.printf("STATE: TEST - Waiting for input voltage (%.1fV) to reach %.1fV (no timeout)\n", 
+                                    obc.onBdChrgrUDc, (float)kInputVoltageThresholdV);
+                }
+                lastTestStateUpdateMs = nowMs;
+            }
+        }
         break;
 
     case CHARGING_READY:
         // Transition to START if:
         // 1. BMS is normal AND Precharge is valid AND button pressed
         // Additionally require a prior Serial "start" command
-        if (bmsReady && prechargeValid && buttonPressed && serialStartRequested)
+        if (prechargeValid && buttonPressed && serialStartRequested)
         {
             bms_t.charging_states = CHARGING_START;
-            currentLimitHigh = true; // Reset to high current limit
-            memcpy(messageConfigs[5].data, kChrgnILimHighData, 8);
-            currentLimit = HV_BATT_CHRG_I_LIM_AMPS_HIGH;
             Serial.println("STATE: -> START (Button Pressed & Serial 'start' received, Conditions Met)");
             // consume the serial start request once used
             serialStartRequested = false;
         }
-        // Go to FAIL if BMS becomes abnormal while waiting
-        else if (!bmsReady)
-        {
-            bms_t.charging_states = CHARGING_FAIL;
-            Serial.println("STATE: -> FAIL (BMS Error while in READY)");
-        }
         break;
 
     case CHARGING_START:
-        // CRITICAL: Check for BMS errors immediately
-        if (!bmsReady)
-        {
-            bms_t.charging_states = CHARGING_FAIL;
-            Serial.println("STATE: -> FAIL (BMS Error during CHARGING)");
-            break;
-        }
-
         // Check Precharge state — treat transient loss as a warning first
         static uint32_t prechargeLostStartMs = 0;
         if (!prechargeValid)
@@ -886,22 +880,16 @@ void Update_Charging_State()
             overcurrentStartTimeMs = 0; // Reset timer if current is normal
         }
 
-        // Adjust current limit based on battery voltage (80% threshold)
-        // When battery voltage reaches 80% of max, reduce current to 1A
-        if (bms_t.total_voltage_mV >= Change_mv && currentLimitHigh)
-        {
-            currentLimitHigh = false;
-            memcpy(messageConfigs[5].data, kChrgnILimLowData, 8);
-            currentLimit = HV_BATT_CHRG_I_LIM_AMPS_LOW;
-            Serial.printf("INFO: Battery reached 80%% voltage (%.2fV). Reducing charge current to %.1fA.\n",
-                          bms_t.total_voltage_mV / 1000.0, currentLimit);
+        if (obc.onBdChrgrUDc > kHvBattULimBits){
+                bms_t.charging_states = CHARGING_READY;
+                Serial.println("STATE: -> READY (Charge completed successfully)");
         }
         break;
 
     case CHARGING_FAIL:
         // Check if BMS recovers - don't auto-recover, require manual button press
         // User must press button again to attempt restart
-        if (bmsReady && prechargeValid && serialResetRequested)
+        if (prechargeValid && serialResetRequested)
         {
             // Attempt to recover by going back to READY
             bms_t.charging_states = CHARGING_READY;
@@ -936,7 +924,7 @@ void Update_Charging_State()
 
 } // end Update_Charging_State
 
-void printSystemStatus()
+void Print_System_Status()
 {
     Serial.println("\n========== System Status ==========");
 
@@ -946,6 +934,9 @@ void printSystemStatus()
     {
     case CHARGING_INIT:
         Serial.println("INITIALIZING");
+        break;
+    case CHARGING_TEST:
+        Serial.println("TEST");
         break;
     case CHARGING_READY:
         Serial.println("READY");
@@ -972,16 +963,12 @@ void printSystemStatus()
         // Consolidated OBC information
         Serial.printf("OBC DC Output Voltage: %.1fV, Current: %.1fA, AC Input: %.1fV, Current: %.1fA\n",
                       obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct);
-        Serial.printf("OBC State: %d, Limit Mode: %s\n",
-                      obc.onBdChrgrSt,
-                      currentLimitHigh ? "HIGH (1.2A)" : "LOW (1.0A)");
     }
 
     // 4. System Conditions
     Serial.println("System Conditions:");
     Serial.printf("  BMS Status: %s\n", (bms_t.bms_states == BMS_NORMAL) ? "NORMAL" : "ERROR");
-    Serial.printf("  Precharge: %s\n", readPrechargeSignal() ? "COMPLETE" : "INCOMPLETE");
-    Serial.printf("  havePreCharge: %s\n", havePreCharge ? "YES" : "NO");
+    Serial.printf("  Precharge: %s\n", Read_Precharge_Signal() ? "COMPLETE" : "INCOMPLETE");
     Serial.printf("  Button: %s | Serial 'start': %s\n",
                   digitalRead(kStartButtonPin) ? "PRESSED" : "NOT",
                   serialStartRequested ? "YES" : "NO");
