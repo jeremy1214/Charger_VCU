@@ -89,17 +89,6 @@ void BMS_Update_Volt(){
             uint32_t cell_voltage_mv = (uint32_t)(bms_ic_info[ic].volt_info.voltages[cell] * CODE_TO_VOLT * 1000);
             bms_t.total_voltage_mV += cell_voltage_mv;
         }
-        
-        // // Check if min or max voltage for this IC is out of range
-        // uint32_t max_voltage_mv = (uint32_t)(CELL_OK_MAX_CODE * CODE_TO_VOLT * 1000);
-        // uint32_t min_voltage_mv = (uint32_t)(CELL_OK_MIN_CODE * CODE_TO_VOLT * 1000);
-        
-        // if(bms_ic_info[ic].status_info.max_voltage > max_voltage_mv){
-        //     bms_t.over_voltage = true;
-        // }
-        // if(bms_ic_info[ic].status_info.min_voltage < min_voltage_mv){
-        //     bms_t.under_voltage = true;
-        // }
     }
 }
 
@@ -376,13 +365,8 @@ void BMS_Print_Cell_Voltages() {
             }
             
             // Print cell voltage with formatting (4 cells per line)
-            Serial.printf("  Cell %2d: %5d mV", cell, cell_voltage_mv);
-            
-            if ((cell + 1) % 4 == 0) {
-                Serial.println();
-            } else {
-                Serial.print(" | ");
-            }
+            Serial.printf("  C %2d: %5d mV", cell, cell_voltage_mv);
+            Serial.print(" | ");
         }
         
         // Ensure newline if last line incomplete
@@ -416,6 +400,25 @@ void BMS_Print_Cell_Voltages() {
         Serial.printf("Voltage Diff:  %5d mV = %.3f V\n", voltage_diff_mv, voltage_diff_v);
     } else {
         Serial.println("ERROR: No valid voltage data available");
+    }
+    
+    Serial.println("============================\n");
+}
+
+void BMS_Print_Temperature() {
+    Serial.println("\n=== Temperature Report ===\n");
+    
+    for (uint8_t ic = 0; ic < NUM_IC; ic++) {
+        if (bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD) {
+            Serial.printf("IC %d: [OFFLINE - No signal]\n\n", ic);
+            continue;
+        }
+        
+        Serial.printf("IC %d:\n", ic);
+        
+        for (uint8_t j = 0; j < NTC_PER_IC; j++) {
+            Serial.printf("  NTC %d: %d (%.1f°C)\n", j, bms_ic_info[ic].temp_info.temperatures[j], bms_ic_info[ic].temp_info.temperatures[j] / 10.0f);
+        }
     }
     
     Serial.println("============================\n");

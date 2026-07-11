@@ -73,8 +73,6 @@ constexpr gpio_num_t kBMSFaultPin = BMS_FAULT_PIN;           // signal to BMS
 constexpr gpio_num_t kPreChargePin = PRECHARGE_PIN;          // PRECHARGE LED (D26)
 constexpr gpio_num_t kHFLPin = HFL_PIN;
 
-// static bool havePreCharge = false;
-
 // ----------------- Message Definitions -----------------
 typedef struct
 {
@@ -123,7 +121,7 @@ constexpr uint16_t kHvBattChrgnILimBits = hvBattChrgnILimTo13bit(HV_BATT_CHRG_I_
 const uint8_t kEnableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC8, 0x00};
 const uint8_t kDisableOutputData[8] = {0x40, 0x00, 0x08, 0xFF, 0xA0, 0x00, 0xC0, 0x00};
 
-const uint16_t Max_mv = 443700;
+const uint32_t Max_mv = 443700;
 static float currentLimit = HV_BATT_CHRG_I_LIM_AMPS;
 
 CANMessageConfig_t messageConfigs[] = {
@@ -872,16 +870,9 @@ void Update_Charging_State()
             overcurrentStartTimeMs = 0; // Reset timer if current is normal
         }
 
-        // if(obc.onBdChrgrT > (overTemperatureLimit + 5)){
-        //     bms_t.charging_states = CHARGING_FAIL;
-        //     Serial.printf("STATE: -> FAIL (Overtemperature detected: %.1f°C > %.1f°C)\n",
-        //                   obc.onBdChrgrT, overTemperatureLimit);
-        //     break;
-        // }
-
-        if (obc.onBdChrgrUDc > (kHvBattULimBits - 0.5)){
-                bms_t.charging_states = CHARGING_READY;
-                Serial.println("STATE: -> READY (Charge completed successfully)");
+        if (obc.onBdChrgrUDc >= bms_t.total_voltage_mV / 1000.0f){
+            bms_t.charging_states = CHARGING_READY;
+            Serial.println("STATE: -> READY (Charge completed successfully)");
         }
         break;
 
@@ -986,7 +977,8 @@ void Print_System_Status()
 
     // 6. Detailed diagnostics (only if needed for troubleshooting)
     // Uncomment these lines for verbose debugging:
-    // BMS_Print_Cell_Voltages();
+    BMS_Print_Cell_Voltages();
+    BMS_Print_Temperature();
     // if (bms_t.bms_states != BMS_NORMAL) {
     //     BMS_Print_Diagnostics();
     // }
