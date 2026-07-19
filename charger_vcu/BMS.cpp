@@ -167,11 +167,11 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
 
     const uint8_t *data = message->data;
 
-    if ((id & 0xF00) == CAN_ID_CELL_BASE)
+    if ((id & 0xFF00) == CAN_ID_CELL_BASE)
     {
         // Process cell voltage message for IC ic
         // CAN ID format: 0x1XY where X = IC number, Y = frame number
-        uint8_t ic = static_cast<uint8_t>((id >> 4) & 0x0F);
+        uint8_t ic = static_cast<uint8_t>((id >> 4) & 0x00F);
         
         // Validate IC index
         if(ic >= NUM_IC) return;
@@ -179,7 +179,7 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
         // Reset signal lost counter since we received a message from this IC
         BMS_Reset_Signal_Lost_Count(ic);
         
-        uint8_t frame = static_cast<uint8_t>(id & 0x00F); // Extract frame number from ID
+        uint8_t frame = static_cast<uint8_t>(id & 0x000F); // Extract frame number from ID
         uint8_t cell_index = frame * 4;                   // Each frame contains 4 cells
         
         // Process up to 4 cell voltages from this frame
@@ -190,11 +190,11 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
             bms_ic_info[ic].volt_info.voltages[i] = code;  // Store raw code value
         }
     }
-    else if ((id & 0xFF0) == CAN_ID_TEMP_BASE)
+    else if ((id & 0xFFF0) == CAN_ID_TEMP_BASE)
     {
         // Process temperature message for IC
         // CAN ID format: 0x2XY where X = reserved, Y = IC number
-        uint8_t ic = static_cast<uint8_t>(id & 0x00F); // Extract IC number from ID
+        uint8_t ic = static_cast<uint8_t>(id & 0x000F); // Extract IC number from ID
         
         // Validate IC index
         if(ic >= NUM_IC) return;
@@ -210,11 +210,11 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
             bms_ic_info[ic].temp_info.temperatures[i] = temp_deci_c;
         }
     }
-    else if ((id & 0xFF0) == CAN_ID_STATUS_BASE)
+    else if ((id & 0xFFF0) == CAN_ID_STATUS_BASE)
     {
         // Process status message for IC
         // CAN ID format: 0x24Y where Y = IC number
-        uint8_t ic = static_cast<uint8_t>(id & 0x00F);
+        uint8_t ic = static_cast<uint8_t>(id & 0x000F);
         
         // Validate IC index
         if(ic >= NUM_IC) return;
@@ -370,9 +370,6 @@ void BMS_Print_Cell_Voltages() {
         }
         
         // Ensure newline if last line incomplete
-        if (ACTIVE_CELLS_PER_IC % 4 != 0) {
-            Serial.println();
-        }
         Serial.println();
     }
     

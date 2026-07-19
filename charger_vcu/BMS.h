@@ -11,9 +11,9 @@ using namespace std;
 #define NTC_PER_IC 4
 #define NUM_FRAMES 5
 
-const uint16_t CAN_ID_CELL_BASE = 0x100;
-const uint16_t CAN_ID_TEMP_BASE = 0x200;
-const uint16_t CAN_ID_STATUS_BASE = 0x240;
+const uint16_t CAN_ID_CELL_BASE = 0x1100;
+const uint16_t CAN_ID_TEMP_BASE = 0x1200;
+const uint16_t CAN_ID_STATUS_BASE = 0x1300;
 
 const uint16_t CELL_OK_MIN_CODE = 30000;
 const uint16_t CELL_OK_MAX_CODE = 33500;
