@@ -107,22 +107,33 @@ void BMS_Update_State(){
         // Check if signal is lost for this IC based on counter threshold
         bool ic_signal_lost = (bms_ic_info[ic].CAN_signal_lost_count > BMS_SIGNAL_THRESHOLD);
         
-        // Decode fault bits to check for additional fault conditions
+        // Decode fault bits according to the BMS status definition:
+        // Bit 0: !BMS_OK -> general fault
+        // Bit 1: Temp Range ERR -> sensor fault
+        // Bit 2: Over Temp -> over temperature
+        // Bit 3: Cell range ERR -> voltage out of range
+        // Bit 4: Open Wire -> sensor fault
         uint8_t fault_bits = bms_ic_info[ic].status_info.fault_bits;
         
-        // Determine fault state for this IC solely from fault bits or signal loss
+        // Determine fault state for this IC based on CAN loss first, then fault bits
         FAULT_STATES ic_fault_state = NORMAL;
-        if((fault_bits & 0x01) || ic_signal_lost){  // Signal lost bit or no CAN messages
+        if(ic_signal_lost){
             ic_fault_state = SIGNAL_LOST;
         }
-        else if(fault_bits & 0x02){  // Sensor fault bit
+        else if(fault_bits & 0x01){  // !BMS_OK
             ic_fault_state = SENSOR_FAULT;
         }
-        else if(fault_bits & 0x04){  // Over temperature bit
+        else if(fault_bits & 0x02){  // Temp Range ERR
+            ic_fault_state = SENSOR_FAULT;
+        }
+        else if(fault_bits & 0x04){  // Over Temp
             ic_fault_state = OVER_TEMPERATURE;
         }
-        else if(fault_bits & 0x08){  // Voltage out of range bit
+        else if(fault_bits & 0x08){  // Cell range ERR
             ic_fault_state = VOLTAGE_OUT_OF_RANGE;
+        }
+        else if(fault_bits & 0x10){  // Open Wire
+            ic_fault_state = SENSOR_FAULT;
         }
         
         // Update IC fault state
@@ -224,7 +235,10 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
         
         // Extract status information from data bytes
         bms_ic_info[ic].status_info.fault_bits = data[0];
-        bms_ic_info[ic].status_info.balance_mask = (data[3] << 16) | (data[2] << 8) | data[1];
+        bms_ic_info[ic].status_info.balance_mask = ((uint32_t)data[3] << 16) |
+                                                    ((uint32_t)data[2] << 8) |
+                                                    data[1];
+        bms_ic_info[ic].status_info.balance_mask &= 0x0001FFFFu; // 17-bit balance mask
         
         // Extract and convert min/max voltages
         uint16_t min_code = (data[5] << 8) | data[4];
