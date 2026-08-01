@@ -99,3 +99,4 @@ void BMS_Update_Data();
 // 在 BMS.h 的末尾附近
 void BMS_Print_Diagnostics();
 void BMS_Print_Cell_Voltages();
+void BMS_Print_Temperature();

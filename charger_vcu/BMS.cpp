@@ -174,7 +174,7 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
     uint16_t id = static_cast<uint16_t>(message->identifier);
 
     // Only process messages in valid CAN ID range
-    if (id < 0x100 || id > 0x2FF) return;
+    if (id < 0x1000 || id > 0x1FFF) return;
 
     const uint8_t *data = message->data;
 
@@ -221,32 +221,32 @@ void BMS_Get_CAN_Message(const twai_message_t *message)
             bms_ic_info[ic].temp_info.temperatures[i] = temp_deci_c;
         }
     }
-    else if ((id & 0xFFF0) == CAN_ID_STATUS_BASE)
-    {
-        // Process status message for IC
-        // CAN ID format: 0x24Y where Y = IC number
-        uint8_t ic = static_cast<uint8_t>(id & 0x000F);
+    // else if ((id & 0xFF00) == CAN_ID_STATUS_BASE)
+    // {
+    //     // Process status message for IC
+    //     // CAN ID format: 0x24Y where Y = IC number
+    //     uint8_t ic = static_cast<uint8_t>(id & 0x000F);
         
-        // Validate IC index
-        if(ic >= NUM_IC) return;
+    //     // Validate IC index
+    //     if(ic >= NUM_IC) return;
         
-        // Reset signal lost counter since we received a message from this IC
-        BMS_Reset_Signal_Lost_Count(ic);
+    //     // Reset signal lost counter since we received a message from this IC
+    //     BMS_Reset_Signal_Lost_Count(ic);
         
-        // Extract status information from data bytes
-        bms_ic_info[ic].status_info.fault_bits = data[0];
-        bms_ic_info[ic].status_info.balance_mask = ((uint32_t)data[3] << 16) |
-                                                    ((uint32_t)data[2] << 8) |
-                                                    data[1];
-        bms_ic_info[ic].status_info.balance_mask &= 0x0001FFFFu; // 17-bit balance mask
+    //     // Extract status information from data bytes
+    //     bms_ic_info[ic].status_info.fault_bits = data[0];
+    //     bms_ic_info[ic].status_info.balance_mask = ((uint32_t)data[3] << 16) |
+    //                                                 ((uint32_t)data[2] << 8) |
+    //                                                 data[1];
+    //     bms_ic_info[ic].status_info.balance_mask &= 0x0001FFFFu; // 17-bit balance mask
         
-        // Extract and convert min/max voltages
-        uint16_t min_code = (data[5] << 8) | data[4];
-        bms_ic_info[ic].status_info.min_voltage = static_cast<uint32_t>(min_code) * CODE_TO_VOLT * 1000; // Store as mV
+    //     // Extract and convert min/max voltages
+    //     uint16_t min_code = (data[5] << 8) | data[4];
+    //     bms_ic_info[ic].status_info.min_voltage = static_cast<uint32_t>(min_code) * CODE_TO_VOLT * 1000; // Store as mV
         
-        uint16_t max_code = (data[7] << 8) | data[6];
-        bms_ic_info[ic].status_info.max_voltage = static_cast<uint32_t>(max_code) * CODE_TO_VOLT * 1000; // Store as mV
-    }
+    //     uint16_t max_code = (data[7] << 8) | data[6];
+    //     bms_ic_info[ic].status_info.max_voltage = static_cast<uint32_t>(max_code) * CODE_TO_VOLT * 1000; // Store as mV
+    // }
 }
 
 /**
