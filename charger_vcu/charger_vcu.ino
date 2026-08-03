@@ -673,7 +673,6 @@ void Control_HFL()
     if (now_Ms - obc.lastUpdateMs > 500) // If we have recent OBC data
     {
         digitalWrite(kHFLPin, LOW); // Active LOW for READY
-        // Serial.println("Error: OBC disconnected. Shutting down HFL.");
     }
 }
 
@@ -953,6 +952,8 @@ void Print_System_Status()
         // Consolidated OBC information
         Serial.printf("OBC DC Output Voltage: %.1fV, Current: %.1fA, AC Input: %.1fV, Current: %.1fA, Temperature: %.1f°C\n",
                       obc.onBdChrgrUDc, obc.onBdChrgrIDc, obc.onBdChrgrUAct, obc.onBdChrgrIAct, obc.onBdChrgrT);
+    }else if(millis() - obc.lastUpdateMs > 500) {
+        Serial.println("ERRORS: OBC no connection");
     }
 
     // 4. System Conditions
